@@ -17,4 +17,5 @@ import OcapnLean.Syrup
 import OcapnLean.Captp.Impl
 import OcapnLean.Netlayer
 import OcapnLean.Netlayer.Tcp
+import OcapnLean.Syrup.Extended
 import OcapnLean.Test.Interop

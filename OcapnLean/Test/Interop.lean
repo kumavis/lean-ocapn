@@ -1,4 +1,5 @@
 import OcapnLean.Syrup
+import OcapnLean.Syrup.Extended
 
 /-!
 # Cross-implementation interop fixtures
@@ -41,5 +42,24 @@ example : encode (.int 100)    = [0x31, 0x30, 0x30, 0x2b] := by native_decide --
 example : encode (.bytes [])   = [0x30, 0x3a] := by native_decide           -- "0:"
 example : encode (.bytes [0x63, 0x61, 0x74])
         = [0x33, 0x3a, 0x63, 0x61, 0x74] := by native_decide                -- "3:cat"
+
+-- Extended-codec parity (strings, symbols, lists, records) ----------------
+
+example : encodeExt (.sym "fetch".toUTF8.toList)
+        = [0x35, 0x27, 0x66, 0x65, 0x74, 0x63, 0x68] := by native_decide    -- "5'fetch"
+
+example : encodeExt (.str "hello".toUTF8.toList)
+        = [0x35, 0x22, 0x68, 0x65, 0x6c, 0x6c, 0x6f] := by native_decide    -- '5"hello'
+
+example : encodeExt (.list [.int 1, .int 2, .int 3])
+        = [0x5b, 0x31, 0x2b, 0x32, 0x2b, 0x33, 0x2b, 0x5d] := by native_decide
+                                                                            -- "[1+2+3+]"
+
+example : encodeExt (.record (.sym "desc:export".toUTF8.toList) [.int 5])
+        = [0x3c,
+           0x31, 0x31, 0x27,
+           0x64, 0x65, 0x73, 0x63, 0x3a, 0x65, 0x78, 0x70, 0x6f, 0x72, 0x74,
+           0x35, 0x2b,
+           0x3e] := by native_decide                                        -- "<11'desc:export5+>"
 
 end OcapnLean.Test.Interop
