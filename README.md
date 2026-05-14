@@ -6,15 +6,22 @@ proved using [Veil](https://github.com/verse-lab/veil).
 
 ## Status
 
-**M0, M2 (partial), M3 done** as of 2026-05-14. Three of the eight proposed
-proofs of behavior are mechanically discharged:
+**Six of the eight proposed proofs of behavior are mechanically discharged**
+(141 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants`):
 
-- **P8** bootstrap-at-zero (single-peer)
-- **P2** promise resolution monotonicity (3 sub-clauses)
-- **P1** end-to-end reference FIFO between two peers — *the headline proof*
+| ID | Property | Module |
+| --- | --- | --- |
+| **P1** | end-to-end reference FIFO (headline) | `OcapnLean/Captp/Twoparty.lean` |
+| **P2** | promise resolution monotonicity (×3) | `OcapnLean/Captp/Spec.lean` |
+| **P3** | no-forgery (direct-send case) | `OcapnLean/Captp/NoForgery.lean` |
+| **P4** | GC soundness (wire-delta refcount) | `OcapnLean/Captp/Gc.lean` |
+| **P5** | crossed-hellos determinism | `OcapnLean/Captp/CrossedHellos.lean` |
+| **P8** | bootstrap-at-zero | `OcapnLean/Captp/Spec.lean` |
 
-103/103 SMT theorems pass under Z3/cvc5 via Veil's `#check_invariants`. See
-[`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
+Remaining: **P6** three-party handoff non-replay (M6 — three-vat composition);
+**P7** abort terminal (deferred — needs temporal/history tracking).
+
+See [`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones.
 
 ## Layout
