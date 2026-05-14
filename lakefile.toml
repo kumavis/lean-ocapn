@@ -10,3 +10,7 @@ rev = "main"
 [[lean_lib]]
 name = "OcapnLean"
 globs = ["OcapnLean", "OcapnLean.+"]
+
+[[lean_exe]]
+name = "ocapn-server"
+root = "OcapnLean.Server"
