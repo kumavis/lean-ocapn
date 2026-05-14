@@ -1,6 +1,7 @@
 # `ocapn-lean` — Plan
 
-> **Status:** draft, 2026-05-14.
+> **Status:** 7/8 named proofs of behavior mechanically discharged
+> (last updated 2026-05-14). See §5 for the per-proof scoreboard.
 > **Scope:** a Lean 4 implementation of the OCapN protocol with safety
 > properties of the CapTP layer mechanically proved using
 > [Veil](https://github.com/verse-lab/veil).
@@ -112,6 +113,19 @@ FIFO). For two peers the full module instantiates the above mirror.
 
 The first three are top priority; the rest are sequenced behind them. Each
 is stated as a `safety` clause plus the supporting `invariant` clauses.
+
+**Scoreboard (2026-05-14, 147 SMT theorems passing):**
+
+| ID | Property | Status | Module |
+| --- | --- | --- | --- |
+| P1 | end-to-end reference FIFO (headline) | ✅ proved | `Captp/Twoparty.lean` |
+| P2 | promise resolution monotonicity (×3) | ✅ proved | `Captp/Spec.lean` |
+| P3 | no-forgery (direct-send case) | ✅ proved (forwarding deferred) | `Captp/NoForgery.lean` |
+| P4 | GC soundness (wire-delta refcount) | ✅ proved | `Captp/Gc.lean` |
+| P5 | crossed-hellos determinism | ✅ proved | `Captp/CrossedHellos.lean` |
+| P6 | three-party handoff non-replay | ✅ proved | `Captp/Threeparty.lean` |
+| P7 | abort terminal | deferred (needs temporal tracking) | — |
+| P8 | bootstrap-at-zero | ✅ proved | `Captp/Spec.lean` |
 
 ### P1. End-to-end reference FIFO (the headline proof)
 
