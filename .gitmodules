@@ -1,0 +1,28 @@
+[submodule "projects/ridley-dobjects"]
+	path = projects/ridley-dobjects
+	url = https://codeberg.org/ridley/DObjects
+	shallow = true
+[submodule "projects/goblins"]
+	path = projects/goblins
+	url = https://gitlab.com/spritely/guile-goblins
+	shallow = true
+[submodule "projects/syrup-ocapn"]
+	path = projects/syrup-ocapn
+	url = https://github.com/ocapn/syrup
+	shallow = true
+[submodule "projects/veil"]
+	path = projects/veil
+	url = https://github.com/verse-lab/veil
+	shallow = true
+[submodule "projects/ocapn-test-suite"]
+	path = projects/ocapn-test-suite
+	url = https://github.com/ocapn/ocapn-test-suite
+	shallow = true
+[submodule "projects/ocapn-spec"]
+	path = projects/ocapn-spec
+	url = https://github.com/ocapn/ocapn
+	shallow = true
+[submodule "projects/endo"]
+	path = projects/endo
+	url = https://github.com/endojs/endo
+	shallow = true
