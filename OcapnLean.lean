@@ -12,3 +12,4 @@ import OcapnLean.Captp.Twoparty
 import OcapnLean.Captp.CrossedHellos
 import OcapnLean.Captp.Gc
 import OcapnLean.Captp.NoForgery
+import OcapnLean.Captp.Threeparty

@@ -6,8 +6,8 @@ proved using [Veil](https://github.com/verse-lab/veil).
 
 ## Status
 
-**Six of the eight proposed proofs of behavior are mechanically discharged**
-(141 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants`):
+**Seven of the eight proposed proofs of behavior are mechanically discharged**
+(147 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants`):
 
 | ID | Property | Module |
 | --- | --- | --- |
@@ -16,10 +16,11 @@ proved using [Veil](https://github.com/verse-lab/veil).
 | **P3** | no-forgery (direct-send case) | `OcapnLean/Captp/NoForgery.lean` |
 | **P4** | GC soundness (wire-delta refcount) | `OcapnLean/Captp/Gc.lean` |
 | **P5** | crossed-hellos determinism | `OcapnLean/Captp/CrossedHellos.lean` |
+| **P6** | three-party handoff non-replay | `OcapnLean/Captp/Threeparty.lean` |
 | **P8** | bootstrap-at-zero | `OcapnLean/Captp/Spec.lean` |
 
-Remaining: **P6** three-party handoff non-replay (M6 — three-vat composition);
-**P7** abort terminal (deferred — needs temporal/history tracking).
+Remaining: **P7** abort terminal (deferred — needs temporal/history
+tracking, not a clean inductive state invariant in Veil v1).
 
 See [`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones.
