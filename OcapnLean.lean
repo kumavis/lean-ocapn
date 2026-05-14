@@ -15,3 +15,4 @@ import OcapnLean.Captp.NoForgery
 import OcapnLean.Captp.Threeparty
 import OcapnLean.Syrup
 import OcapnLean.Captp.Impl
+import OcapnLean.Test.Interop
