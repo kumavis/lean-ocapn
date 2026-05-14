@@ -14,6 +14,7 @@ import OcapnLean.Captp.Gc
 import OcapnLean.Captp.NoForgery
 import OcapnLean.Captp.Threeparty
 import OcapnLean.Syrup
+import OcapnLean.Captp.Bootstrap
 import OcapnLean.Captp.Impl
 import OcapnLean.Captp.Run
 import OcapnLean.Netlayer
