@@ -188,6 +188,57 @@ proof against `Captp.Spec`.
       (Lean's `slim_check` or similar)
 - [ ] Short technical report / artifact for the OCapN community
 
+## Proposed-spec extensions to track _(not on the milestone path yet)_
+
+These are CapTP features that are **not in the current draft spec we
+implement** (`projects/ocapn-spec/draft-specifications/CapTP
+Specification.md`) but are under discussion in the OCapN
+pre-standardization group. Slated here so they aren't lost; we'll
+fold them into the relevant milestone once the spec language
+stabilises.
+
+### Promise shortening
+
+When a promise `P1` resolves to another promise `P2`, the CapTP
+session can collapse the chain — subsequent messages targeting `P1`
+should be forwarded directly to `P2`'s eventual resolution rather
+than hopping through `P1` first. This is the "promise shortening"
+optimisation; conceptually closely related to E's "redirector"
+behaviour.
+
+**For ocapn-lean:**
+- Extend `OcapnLean.Captp.Spec`'s promise table to model the
+  forwarding pointer, then prove monotonicity (a shortened
+  promise's settled value is invariant under further shortening).
+- This is a natural extension of PLAN.md **P2** (promise
+  monotonicity); the shortened-chain invariant is `chainResolved P V
+  → all-along-chain V` — should fall to the same SMT pipeline.
+
+### `op:flush`
+
+A proposed operation that asks a peer to acknowledge it has
+processed all preceding frames on the session before sending the
+flush-reply. Used by the test suite (and by GC-sensitive protocols)
+to gate on "all in-flight messages drained" without polling.
+
+**For ocapn-lean:**
+- New constructor in `OcapnLean.Captp.Messages.Op` once the wire
+  shape is settled.
+- Affects FIFO reasoning (**P1**): a flush-reply happens-after all
+  earlier sends, which strengthens the FIFO statement to
+  *delivery-completed-before* rather than just *delivered-before*.
+- Affects GC reasoning (**P4**): a flush gives the exporter a
+  durable "no in-flight references" witness, simplifying
+  collection liveness arguments.
+
+### Tracking
+
+Watch `projects/ocapn-spec/draft-specifications/CapTP
+Specification.md` for additions or new draft documents
+(`promise-shortening.md`, `op-flush.md` are likely names). The
+monthly spec-drift watch (see "Continuous tracks" above) is where
+these would land first.
+
 ## Continuous tracks (run alongside milestones)
 
 - **CI.** GitHub Actions: `lake build` on push; cache `.lake/packages` and
