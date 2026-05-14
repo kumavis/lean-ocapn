@@ -88,21 +88,24 @@ real Syrup bytes from the upstream test corpus.
 - [ ] Cryptographic signatures treated as a trusted black box
       (`function validSig : pubkey → bytes → sig → Prop`)
 
-## Milestone M1 — Syrup codec _(partially done 2026-05-14)_
+## Milestone M1 — Syrup codec _(largely done 2026-05-14)_
 
 - [x] `OcapnLean/Syrup.lean` — encode/decode for bool, int, bytes
-- [x] `decode_encode_bool` — universal round-trip for booleans
+- [x] `decode_encode` — **universal** round-trip for the atomic subset
 - [x] 16 concrete int/bytes round-trips by `native_decide`
-- [ ] **Deferred:** universal `decode_encode_int` / `decode_encode_bytes`
-      theorems. Needs strong-recursion induction on `encodeNat` plus
-      three helper lemmas (`encodeNat_all_digits`,
-      `digitsToNat_encodeNat`, `takeDigits_append_nondigit`). Tractable
-      but verbose; queued behind higher-priority work.
-- [ ] **Deferred:** extend codec to strings, symbols, floats, doubles,
-      and the containers (list, dict, record, set). The decoder
-      architecture (`takeDigits` etc.) generalises directly.
+      (redundant given the universal theorem, kept as documentation)
+- [x] `OcapnLean/Syrup/Extended.lean` — encode/decode for strings,
+      symbols, lists, records (sufficient for CapTP wire frames)
+- [x] Cross-impl byte-parity vs the Python reference (4 new
+      `native_decide` fixtures for sym/str/list/record)
+- [ ] **Deferred:** universal round-trip proof for the container
+      types. Requires structural induction over `ValueExt` (which
+      nests through `List ValueExt`) and a `partial def → def`
+      conversion with a fuel measure or wellfounded recursion.
+      Conceptually straightforward but a chunk of work.
+- [ ] **Deferred:** extend codec to floats, doubles, dicts, sets.
 
-## Milestone M7 — Executable implementation _(partially done 2026-05-14)_
+## Milestone M7 — Executable implementation _(largely done 2026-05-14)_
 
 Goal: an `IO`-effectful Lean implementation of CapTP plus a refinement
 proof against `Captp.Spec`.
@@ -110,35 +113,37 @@ proof against `Captp.Spec`.
 - [x] `OcapnLean/Captp/Impl.lean` — runnable handlers (`exportNew`,
       `importNew`, `abort`) with `bootstrapAtZero` proved in pure Lean
       over all transitions
-- [x] `OcapnLean/Netlayer.lean` + `Netlayer/Tcp.lean` — abstract netlayer
-      with a libuv-backed TCP reference implementation (Lean 4.24
-      stdlib `Std.Internal.IO.Async.TCP`)
-- [ ] **Deferred:** explicit `simulates : Impl.State → Spec.State → Prop`
-      relation against the Veil-generated State. The refinement
-      pattern is in place (impl and Veil spec both prove the same
-      invariants); making the connection bilateral requires
-      introspecting `CaptpSinglePeer.State` from Veil's
-      `#gen_state` and writing one forward-simulation lemma per
-      action. Estimated ~10 lemmas total.
-- [ ] **Deferred:** glue between `Captp.Impl` and `Netlayer.Tcp` —
-      drive the impl's actions from incoming Syrup-encoded `op:*`
-      frames, and emit outgoing actions to the netlayer. This is the
-      step that makes the impl a real OCapN peer.
-- [ ] **Deferred:** executable demo — two local processes establishing
-      a session, doing `fetch`, sending a deliver, getting a result.
+- [x] `OcapnLean/Netlayer.lean` + `Netlayer/Tcp.lean` — abstract
+      netlayer with libuv-backed TCP reference implementation
+- [x] `OcapnLean/Captp/Run.lean` — Syrup-frame reader/writer
+      (`FramedConn`) and `runHandler` event loop over `Netlayer`.
+      Verified end-to-end via `scripts/captp-framed-echo.lean`
+- [x] `OcapnLean/Captp/Refinement.lean` — explicit
+      `simulates : Impl.State → SpecState → Prop` plus
+      `initial_simulates`, `abort_refines`, and the lifting lemma
+      `bootstrapAtZero_lifts` (Veil safety ⇒ impl safety)
+- [ ] **Deferred:** `exportNew_refines` / `importNew_refines`
+      lemmas. Same shape as `abort_refines`; just need to mirror the
+      table updates.
+- [ ] **Deferred:** lifting lemmas for the other Veil safety clauses
+      (promise monotonicity, table functionality). Mechanically
+      similar to `bootstrapAtZero_lifts`.
 
-## Milestone M8 — Interop _(partially done 2026-05-14)_
+## Milestone M8 — Interop _(largely done 2026-05-14)_
 
-- [x] Syrup-layer interop: `OcapnLean/Test/Interop.lean` — 9
-      `native_decide` checks confirming byte-parity vs upstream
-      Python reference `projects/syrup-ocapn/impls/python/syrup.py`
-- [x] `scripts/run-interop.sh` — CapTP-level harness skeleton
-- [x] `scripts/regenerate-interop-fixtures.py` — re-derive fixtures
-- [ ] **Deferred:** CapTP-level interop with the
-      `ocapn-test-suite` `test_runner.py`. Requires the impl⇔netlayer
-      glue (see M7 deferred items) so that running our impl exposes a
-      tcp-testing-only listener implementing the spec's required
-      bootstrap objects (Car Factory, etc.).
+- [x] Syrup-layer interop: 13 `native_decide` byte-parity checks
+      (9 base + 4 extended) vs Python reference impl
+- [x] `OcapnLean/Captp/Bootstrap.lean` — registry of the
+      ocapn-test-suite swissnums (Car Factory builder, Echo GC,
+      Greeter, Promise resolver, Sturdyref enlivener) with
+      reference handlers, and `dispatchFetch` for the
+      `<op:deliver <desc:export 0> [fetch swissnum] _ _>` pattern
+- [x] Verified end-to-end via `scripts/bootstrap-echo-gc.lean`:
+      a client sends an op:deliver/fetch over TCP, the server
+      looks up the swissnum and returns the handler's result.
+- [ ] **Deferred:** running the full `ocapn-test-suite` test_runner.
+      Requires expanding the dispatcher to model session export/
+      answer tables, refcount GC, and the rest of the op:* set.
 - [ ] **Deferred:** interop confirmed with **at least one** of
       Spritely Goblins / Endo / Ridley's DObjects.
 

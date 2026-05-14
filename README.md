@@ -32,21 +32,32 @@ ocapn-lean/
 ├── OcapnLean.lean              top-level module (imports everything)
 ├── OcapnLean/
 │   ├── Model.lean              abstract data model
-│   ├── Syrup.lean              wire codec (bool/int/bytes; round-trip proved)
+│   ├── Syrup.lean              wire codec (bool/int/bytes; universal round-trip proved)
+│   ├── Syrup/
+│   │   └── Extended.lean       codec (str/sym/list/record; partial-def decoder)
+│   ├── Netlayer.lean           abstract `Netlayer { send, recv?, close }`
+│   ├── Netlayer/
+│   │   └── Tcp.lean            libuv-backed TCP reference netlayer
 │   ├── Captp/
 │   │   ├── Messages.lean       op:* / desc:* algebraic types
 │   │   ├── Spec.lean           Veil: single-peer  — proves P8, P2
-│   │   ├── Twoparty.lean       Veil: two-peer    — proves P1 (FIFO)
-│   │   ├── CrossedHellos.lean  Veil: handshake   — proves P5
-│   │   ├── Gc.lean             Veil: refcounts   — proves P4
-│   │   ├── NoForgery.lean      Veil: authority   — proves P3
-│   │   ├── Threeparty.lean     Veil: handoffs    — proves P6
-│   │   └── Impl.lean           executable impl   — bootstrap inv. proved in Lean
+│   │   ├── Twoparty.lean       Veil: two-peer     — proves P1 (FIFO)
+│   │   ├── CrossedHellos.lean  Veil: handshake    — proves P5
+│   │   ├── Gc.lean             Veil: refcounts    — proves P4
+│   │   ├── NoForgery.lean      Veil: authority    — proves P3
+│   │   ├── Threeparty.lean     Veil: handoffs     — proves P6
+│   │   ├── Impl.lean           executable impl    — bootstrapAtZero in pure Lean
+│   │   ├── Refinement.lean     simulates : Impl.State → SpecState
+│   │   ├── Run.lean            FramedConn + runHandler event loop
+│   │   └── Bootstrap.lean      swissnum registry + dispatchFetch
 │   └── Test/
-│       └── Interop.lean        byte-parity check vs python ref syrup
+│       └── Interop.lean        byte-parity checks vs python ref syrup
 ├── scripts/
-│   ├── run-interop.sh                     captp-level harness skeleton
-│   └── regenerate-interop-fixtures.py     refresh syrup fixtures
+│   ├── netlayer-echo.lean              TCP echo loopback smoke test
+│   ├── captp-framed-echo.lean          syrup-framed CapTP exchange over TCP
+│   ├── bootstrap-echo-gc.lean          end-to-end op:deliver/fetch routing
+│   ├── run-interop.sh                  captp-level harness skeleton
+│   └── regenerate-interop-fixtures.py  refresh syrup fixtures
 ├── docs/
 │   ├── PLAN.md                 proof plan + per-property scoreboard
 │   └── ROADMAP.md              milestones M0–M10
