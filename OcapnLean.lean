@@ -10,3 +10,4 @@ import OcapnLean.Captp.Messages
 import OcapnLean.Captp.Spec
 import OcapnLean.Captp.Twoparty
 import OcapnLean.Captp.CrossedHellos
+import OcapnLean.Captp.Gc
