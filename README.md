@@ -29,25 +29,31 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
 
 ```
 ocapn-lean/
-├── OcapnLean.lean             top-level module
+├── OcapnLean.lean              top-level module (imports everything)
 ├── OcapnLean/
-│   ├── Model.lean             abstract data model (Atom/Container/Reference)
-│   └── Captp/
-│       ├── Messages.lean      op:* / desc:* algebraic types
-│       └── Spec.lean          Veil module: single-peer state machine
+│   ├── Model.lean              abstract data model
+│   ├── Syrup.lean              wire codec (bool/int/bytes; round-trip proved)
+│   ├── Captp/
+│   │   ├── Messages.lean       op:* / desc:* algebraic types
+│   │   ├── Spec.lean           Veil: single-peer  — proves P8, P2
+│   │   ├── Twoparty.lean       Veil: two-peer    — proves P1 (FIFO)
+│   │   ├── CrossedHellos.lean  Veil: handshake   — proves P5
+│   │   ├── Gc.lean             Veil: refcounts   — proves P4
+│   │   ├── NoForgery.lean      Veil: authority   — proves P3
+│   │   ├── Threeparty.lean     Veil: handoffs    — proves P6
+│   │   └── Impl.lean           executable impl   — bootstrap inv. proved in Lean
+│   └── Test/
+│       └── Interop.lean        byte-parity check vs python ref syrup
+├── scripts/
+│   ├── run-interop.sh                     captp-level harness skeleton
+│   └── regenerate-interop-fixtures.py     refresh syrup fixtures
 ├── docs/
-│   ├── PLAN.md                proof plan (P1 = E2E reference FIFO)
-│   └── ROADMAP.md             milestones
-├── projects/                  read-only reference checkouts (do not modify)
-│   ├── ocapn-spec/            canonical draft specifications
-│   ├── ocapn-test-suite/      Python interop tests
-│   ├── syrup-ocapn/           serialization format
-│   ├── goblins/               Spritely Goblins (Guile)
-│   ├── endo/                  Endo / @endo/ocapn (JavaScript)
-│   ├── ridley-dobjects/       Ridley DObjects (Dart)
-│   └── veil/                  Veil framework checkout (for reference)
+│   ├── PLAN.md                 proof plan + per-property scoreboard
+│   └── ROADMAP.md              milestones M0–M10
+├── projects/                   submodules: ocapn-spec, ocapn-test-suite,
+│                               syrup-ocapn, goblins, endo, ridley-dobjects, veil
 ├── lakefile.toml
-└── lean-toolchain             pinned: leanprover/lean4:v4.24.0
+└── lean-toolchain              pinned: leanprover/lean4:v4.24.0
 ```
 
 ## Build
