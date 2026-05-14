@@ -47,21 +47,49 @@ def opAbortSym : List UInt8 := "op:abort".toUTF8.toList
 def descExportSym : List UInt8 := "desc:export".toUTF8.toList
 
 /-- A placeholder 32-byte EdDSA public-key payload. Not real crypto. -/
-def stubPubkey : List UInt8 :=
-  List.replicate 32 0x00
+def stubPubkey : List UInt8 := List.replicate 32 0x00
 
-/-- A placeholder 64-byte EdDSA signature. -/
-def stubSignature : List UInt8 :=
-  List.replicate 64 0x00
+/-- A placeholder 32-byte signature `r` component. -/
+def stubSigR : List UInt8 := List.replicate 32 0x00
+
+/-- A placeholder 32-byte signature `s` component. -/
+def stubSigS : List UInt8 := List.replicate 32 0x00
+
+/-- gcrypt-style `(public-key (ecc (curve Ed25519) (flags eddsa) (q ...)))`.
+The test suite's `CapTPPublicKey.from_syrup_record` expects exactly
+this shape; the `q` bytes are read back as the EdDSA pubkey. We send
+placeholder zeros — sufficient for the version-echo test, which
+doesn't verify signatures. -/
+def buildSessionPubkey : ValueExt :=
+  .list
+    [ .sym "public-key".toUTF8.toList
+    , .list
+        [ .sym "ecc".toUTF8.toList
+        , .list [.sym "curve".toUTF8.toList, .sym "Ed25519".toUTF8.toList]
+        , .list [.sym "flags".toUTF8.toList, .sym "eddsa".toUTF8.toList]
+        , .list [.sym "q".toUTF8.toList, .bytes stubPubkey]
+        ]
+    ]
+
+/-- gcrypt-style `(sig-val (eddsa (r ...) (s ...)))`. -/
+def buildLocationSig : ValueExt :=
+  .list
+    [ .sym "sig-val".toUTF8.toList
+    , .list
+        [ .sym "eddsa".toUTF8.toList
+        , .list [.sym "r".toUTF8.toList, .bytes stubSigR]
+        , .list [.sym "s".toUTF8.toList, .bytes stubSigS]
+        ]
+    ]
 
 /-- Build an `op:start-session` reply with placeholder crypto fields.
-The shape mirrors the test-runner's `OpStartSession` syrup record. -/
+The shape mirrors the test-runner's `OpStartSession.from_syrup_record`. -/
 def buildStartSessionReply (location : ValueExt) : ValueExt :=
   .record (.sym opStartSessionSym)
     [ .str captpVersion.toUTF8.toList
-    , .bytes stubPubkey            -- session-pubkey (stub)
-    , location                     -- acceptable-location
-    , .bytes stubSignature         -- acceptable-location-sig (stub)
+    , buildSessionPubkey
+    , location
+    , buildLocationSig
     ]
 
 /-- Build an `op:abort` with the given reason. -/
@@ -106,12 +134,16 @@ def dispatch (s : State) (registry : Registry) (frame : ValueExt) :
     | some version =>
       if version = captpVersion.toUTF8.toList then
         s.handshakeDone.set true
-        return some (buildStartSessionReply s.ourLocation)
+        let reply := buildStartSessionReply s.ourLocation
+        let bytes := Encode.encodeExt reply
+        IO.eprintln s!"[session] handshake OK, replying with {bytes.length} bytes"
+        return some reply
       else
         s.aborted.set true
         return some (buildAbort s!"unsupported captp version: {String.fromUTF8! ⟨version.toArray⟩}")
     | none =>
       -- First frame wasn't a start-session: abort.
+      IO.eprintln s!"[session] first frame is not op:start-session; aborting"
       s.aborted.set true
       return some (buildAbort "expected op:start-session as first message")
 

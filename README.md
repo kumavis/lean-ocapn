@@ -34,10 +34,11 @@ ocapn-lean/
 │   ├── Model.lean              abstract data model
 │   ├── Syrup.lean              wire codec (bool/int/bytes; universal round-trip proved)
 │   ├── Syrup/
-│   │   └── Extended.lean       codec (str/sym/list/record; partial-def decoder)
+│   │   └── Extended.lean       codec (str/sym/list/record; fueled total decoder)
 │   ├── Netlayer.lean           abstract `Netlayer { send, recv?, close }`
 │   ├── Netlayer/
 │   │   └── Tcp.lean            libuv-backed TCP reference netlayer
+│   ├── Server.lean             `lake exe ocapn-server` — accept loop
 │   ├── Captp/
 │   │   ├── Messages.lean       op:* / desc:* algebraic types
 │   │   ├── Spec.lean           Veil: single-peer  — proves P8, P2
@@ -47,15 +48,18 @@ ocapn-lean/
 │   │   ├── NoForgery.lean      Veil: authority    — proves P3
 │   │   ├── Threeparty.lean     Veil: handoffs     — proves P6
 │   │   ├── Impl.lean           executable impl    — bootstrapAtZero in pure Lean
-│   │   ├── Refinement.lean     simulates : Impl.State → SpecState
+│   │   ├── Refinement.lean     simulates + initial/abort/export/import refines + 3 lifts
 │   │   ├── Run.lean            FramedConn + runHandler event loop
-│   │   └── Bootstrap.lean      swissnum registry + dispatchFetch
+│   │   ├── Bootstrap.lean      swissnum registry + dispatchFetch
+│   │   └── Session.lean        per-connection handshake + dispatch
 │   └── Test/
 │       └── Interop.lean        byte-parity checks vs python ref syrup
 ├── scripts/
 │   ├── netlayer-echo.lean              TCP echo loopback smoke test
 │   ├── captp-framed-echo.lean          syrup-framed CapTP exchange over TCP
 │   ├── bootstrap-echo-gc.lean          end-to-end op:deliver/fetch routing
+│   ├── interop-start-session.py        Python ↔ Lean handshake interop
+│   ├── interop-fetch-echo-gc.py        Python ↔ Lean fetch interop
 │   ├── run-interop.sh                  captp-level harness skeleton
 │   └── regenerate-interop-fixtures.py  refresh syrup fixtures
 ├── docs/
@@ -65,6 +69,17 @@ ocapn-lean/
 │                               syrup-ocapn, goblins, endo, ridley-dobjects, veil
 ├── lakefile.toml
 └── lean-toolchain              pinned: leanprover/lean4:v4.24.0
+```
+
+## Running the reference server
+
+```sh
+# Terminal 1
+lake exe ocapn-server -- --port 22045
+
+# Terminal 2
+python3 scripts/interop-start-session.py    # handshake interop
+python3 scripts/interop-fetch-echo-gc.py    # fetch interop
 ```
 
 ## Build

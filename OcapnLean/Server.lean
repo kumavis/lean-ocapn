@@ -32,17 +32,17 @@ def parsePort : List String → UInt16
   | "--port" :: n :: _       => (n.toNat?.getD 22045).toUInt16
   | _ :: rest                => parsePort rest
 
-/-- Our "location" — what we'd quote back in op:start-session. We use a
-syrup record of shape `<my-location <ocapn-locator tcp-testing-only ...>>`
-mirroring what Python's test suite emits. With a stub designator and
-no hints. -/
-def ourLocation (port : UInt16) : ValueExt :=
-  .record (.sym "my-location".toUTF8.toList)
-    [ .record (.sym "ocapn-machine".toUTF8.toList)
-        [ .str s!"127.0.0.1:{port}".toUTF8.toList
-        , .sym "tcp-testing-only".toUTF8.toList
-        , .bool false
-        ]
+/-- Our "location" — the `<ocapn-peer transport address hints>` record
+the test suite expects. `address` is a unique identifier; `hints`
+would be a Syrup dict in the upstream Python netlayer, but we don't
+yet have dicts in ValueExt, so we send an empty list as a stand-in.
+The OCapNPeer parser only checks the record label and argument
+count, not the type of `hints`. -/
+def ourLocation (_port : UInt16) : ValueExt :=
+  .record (.sym "ocapn-peer".toUTF8.toList)
+    [ .sym "tcp-testing-only".toUTF8.toList
+    , .str "ocapnleandeadbeefdeadbeefdeadbeef".toUTF8.toList
+    , .list []                        -- placeholder for hints dict
     ]
 
 /-- Accept-forever loop. Each connection is handed to a dedicated

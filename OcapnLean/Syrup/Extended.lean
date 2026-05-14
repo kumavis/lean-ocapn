@@ -38,6 +38,7 @@ inductive ValueExt
   | sym    (s : List UInt8)         -- UTF-8 octets
   | list   (items : List ValueExt)
   | record (label : ValueExt) (fields : List ValueExt)
+  | dict   (entries : List ValueExt)  -- flat [k1, v1, k2, v2, …]
 deriving Inhabited, Repr
 
 namespace Encode
@@ -55,6 +56,8 @@ def encodeExt : ValueExt → List UInt8
       0x5b :: encodeList items ++ [0x5d]                              -- '[' ... ']'
   | .record label fs =>
       0x3c :: encodeExt label ++ encodeList fs ++ [0x3e]              -- '<' ... '>'
+  | .dict entries    =>
+      0x7b :: encodeList entries ++ [0x7d]                            -- '{' ... '}'
 where
   encodeList : List ValueExt → List UInt8
   | []      => []
@@ -78,6 +81,7 @@ def decodeExtFuel : Nat → List UInt8 → Option (ValueExt × List UInt8)
     if b = 0x74 then some (.bool true, rest)
     else if b = 0x66 then some (.bool false, rest)
     else if b = 0x5b then decodeListItemsFuel fuel rest []          -- '['
+    else if b = 0x7b then decodeDictItemsFuel fuel rest []          -- '{'
     else if b = 0x3c then                                            -- '<'
       match decodeExtFuel fuel rest with
       | none              => none
@@ -129,6 +133,17 @@ def decodeRecordFieldsFuel : Nat → List UInt8 → List ValueExt
     match decodeExtFuel fuel input with
     | none => none
     | some (v, rest) => decodeRecordFieldsFuel fuel rest (v :: acc)
+
+/-- Fueled decoder for dict bodies. -/
+def decodeDictItemsFuel : Nat → List UInt8 → List ValueExt
+                       → Option (ValueExt × List UInt8)
+  | 0,        _,                _   => none
+  | _ + 1,    [],               _   => none
+  | _ + 1,    0x7d :: rest,     acc => some (.dict acc.reverse, rest)
+  | fuel + 1, input@(_ :: _),   acc =>
+    match decodeExtFuel fuel input with
+    | none => none
+    | some (v, rest) => decodeDictItemsFuel fuel rest (v :: acc)
 
 end
 

@@ -134,18 +134,46 @@ proof against `Captp.Spec`.
 - [x] Syrup-layer interop: 13 `native_decide` byte-parity checks
       (9 base + 4 extended) vs Python reference impl
 - [x] `OcapnLean/Captp/Bootstrap.lean` — registry of the
-      ocapn-test-suite swissnums (Car Factory builder, Echo GC,
-      Greeter, Promise resolver, Sturdyref enlivener) with
-      reference handlers, and `dispatchFetch` for the
-      `<op:deliver <desc:export 0> [fetch swissnum] _ _>` pattern
-- [x] Verified end-to-end via `scripts/bootstrap-echo-gc.lean`:
-      a client sends an op:deliver/fetch over TCP, the server
-      looks up the swissnum and returns the handler's result.
-- [ ] **Deferred:** running the full `ocapn-test-suite` test_runner.
-      Requires expanding the dispatcher to model session export/
-      answer tables, refcount GC, and the rest of the op:* set.
-- [ ] **Deferred:** interop confirmed with **at least one** of
-      Spritely Goblins / Endo / Ridley's DObjects.
+      ocapn-test-suite swissnums with reference handlers and
+      `dispatchFetch`
+- [x] `OcapnLean/Captp/Session.lean` + `OcapnLean.Server`
+      (`lake exe ocapn-server`) — listens on TCP, accepts
+      multiple connections, drives `Session.run` per connection
+- [x] **Wire-level cross-impl interop confirmed**:
+      `scripts/interop-start-session.py` and
+      `scripts/interop-fetch-echo-gc.py` use the upstream Python
+      Syrup encoder to drive our running server. The handshake
+      completes with the correct `captp-version` echo; an
+      `op:deliver` fetching the Echo-GC swissnum returns the
+      expected `[]` reply.
+- [x] **First ocapn-test-suite test passes against our server:**
+      `tests.op_start_session.OpStartSessionTest.test_captp_remote_version`
+      — `ok` under the upstream `test_runner.py`. This requires the
+      server to: parse the inbound `op:start-session` (containing
+      Syrup dict-shaped hints), reply with a properly-shaped
+      `op:start-session` containing gcrypt-style
+      `(public-key (ecc ...))` and `(sig-val (eddsa ...))`
+      structures, and emit our location as a 3-arg `ocapn-peer`
+      record.
+- [ ] **Deferred:** the remaining `op_start_session` tests
+      (`invalid_version`, `invalid_signature`, the two
+      crossed-hellos tests). Requires:
+      (a) Ed25519 signature verification on our side, plus a real
+          private key for our own signature (currently stubbed
+          to zero bytes — the strict tests reject this);
+      (b) modelling the sturdyref-enlivener bootstrap object so
+          the crossed-hellos tests can induce a return connection.
+- [ ] **Deferred:** the other test modules (`op_deliver`,
+      `op_gc`, `op_listen`, `op_abort`, `third_party_handoffs`).
+      Each adds dispatch surface — promise pipelining, GC
+      refcount tracking, three-party handoff verification, etc.
+- [ ] **Deferred:** wire-level interop with Spritely Goblins /
+      Endo / Ridley's DObjects. Each requires its own runtime:
+      Goblins needs Guile (not installed), Endo a Yarn install of
+      a large monorepo, DObjects a Dart SDK. The Python reference
+      encoder doubling as a non-Lean impl already validates the
+      most important interop guarantee (byte parity at the
+      Syrup layer plus correct CapTP handshake semantics).
 
 ## Milestone M9 — Locator + sturdyref _(2026-09-15)_
 
