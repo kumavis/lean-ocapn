@@ -16,6 +16,7 @@ import OcapnLean.Captp.Threeparty
 import OcapnLean.Syrup
 import OcapnLean.Captp.Bootstrap
 import OcapnLean.Captp.Impl
+import OcapnLean.Captp.Refinement
 import OcapnLean.Captp.Run
 import OcapnLean.Netlayer
 import OcapnLean.Netlayer.Tcp
