@@ -152,7 +152,7 @@ def main : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "tcp-testing-only".toUTF8.toList
       , .str "clientdeadbeefdeadbeefdeadbeefde".toUTF8.toList
-      , .list []
+      , .dict []
       ]
   let cliSig := ed25519Sign cliSk (Session.locationSigningPayload helloLoc)
   let cliSigList := cliSig.toList

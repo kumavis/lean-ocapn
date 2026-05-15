@@ -38,7 +38,7 @@ def main : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "tcp-testing-only".toUTF8.toList
       , .str "ocapnleandeadbeefdeadbeefdeadbeef".toUTF8.toList
-      , .list []
+      , .dict []
       ]
 
   -- Spin up the server side in a dedicated task.
@@ -64,7 +64,7 @@ def main : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "tcp-testing-only".toUTF8.toList
       , .str "clientdeadbeefdeadbeefdeadbeefde".toUTF8.toList
-      , .list []
+      , .dict []
       ]
   let cliPayload := locationSigningPayload helloLoc
   let cliSigBA := ed25519Sign cliSk cliPayload

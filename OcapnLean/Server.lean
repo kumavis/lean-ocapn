@@ -32,17 +32,16 @@ def parsePort : List String → UInt16
   | "--port" :: n :: _       => (n.toNat?.getD 22045).toUInt16
   | _ :: rest                => parsePort rest
 
-/-- Our "location" — the `<ocapn-peer transport address hints>` record
-the test suite expects. `address` is a unique identifier; `hints`
-would be a Syrup dict in the upstream Python netlayer, but we don't
-yet have dicts in ValueExt, so we send an empty list as a stand-in.
-The OCapNPeer parser only checks the record label and argument
-count, not the type of `hints`. -/
+/-- Our "location" — the `<ocapn-peer transport designator hints>` record
+the spec defines (`projects/ocapn-spec/draft-specifications/Locators.md`).
+Per spec §Peer Syrup Serialization the `hints` field must be `struct | false`.
+We emit an empty struct (`.dict []`), which matches both the spec and the
+strict parsers in `@endo/ocapn` and Ridley. -/
 def ourLocation (_port : UInt16) : ValueExt :=
   .record (.sym "ocapn-peer".toUTF8.toList)
     [ .sym "tcp-testing-only".toUTF8.toList
     , .str "ocapnleandeadbeefdeadbeefdeadbeef".toUTF8.toList
-    , .list []                        -- placeholder for hints dict
+    , .dict []
     ]
 
 /-- Accept-forever loop. Each connection is handed to a dedicated

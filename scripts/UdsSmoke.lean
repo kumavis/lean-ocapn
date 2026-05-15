@@ -36,7 +36,7 @@ def main : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "testuds".toUTF8.toList
       , .str serverNode.toUTF8.toList
-      , .list []
+      , .dict []
       ]
 
   let acceptOne ← Netlayer.Uds.testudsListen dir serverNode
@@ -59,7 +59,7 @@ def main : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "testuds".toUTF8.toList
       , .str clientNode.toUTF8.toList
-      , .list []
+      , .dict []
       ]
   let cliNet ← Netlayer.Uds.testudsConnect dir serverNode
   let cliConn ← FramedConn.of cliNet

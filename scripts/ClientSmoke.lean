@@ -57,7 +57,7 @@ def main : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "tcp-testing-only".toUTF8.toList
       , .str "clientdeadbeefdeadbeefdeadbeefde".toUTF8.toList
-      , .list []
+      , .dict []
       ]
   let s ← Captp.Client.Session.connect addr clientLoc
   Captp.Client.handshake s

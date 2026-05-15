@@ -40,7 +40,7 @@ def main (args : List String) : IO Unit := do
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "testuds".toUTF8.toList
       , .str "ocapn-lean-client".toUTF8.toList
-      , .list []
+      , .dict []
       ]
   let net ← Netlayer.Uds.connect cli.sock
   let conn ← FramedConn.of net
