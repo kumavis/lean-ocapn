@@ -276,25 +276,29 @@ and received **zero bytes** in reply (Goblins didn't even send its
 own first `op:start-session`). Goblins doesn't crash or print
 errors; it's just silent.
 
-We probed the issue with two diagnostic scripts in `/tmp` (not
-committed; they're throwaways):
+We probed the issue with diagnostic scripts now committed to the
+repo at `scripts/diagnostics/`:
 
-  * `/tmp/goblins-minimal-probe.scm` — single-vat script that
-    spawns the testuds netlayer then `spawn-mycapn` on it. The
-    netlayer spawn succeeds, but `(with-vat … (spawn-mycapn a-nl))`
-    in a **separate** `with-vat` block never returns. If
-    `(spawn-mycapn a-nl)` is run inside the **same** `with-vat`
-    block as the netlayer spawn (the pattern
-    `scripts/goblins-testuds-server.scm` uses), the body completes
-    and the outer `(wait forever)` keeps the script alive — which
-    is why our server script appears to start "ready" but then
-    never accepts a real handshake.
+  * `scripts/diagnostics/goblins-minimal-vat-probe.scm` — single-vat
+    script that spawns the testuds netlayer then `spawn-mycapn` on
+    it, wrapped in `run-fibers`. The netlayer spawn succeeds, but
+    `(with-vat … (spawn-mycapn a-nl))` never returns. The body
+    executes side-effects fully (verified via `format` instrumentation
+    in earlier sessions) but `vat-send`'s reply mechanism never
+    delivers control back. Wrapping in `run-fibers` does NOT change
+    the behaviour.
 
-  * `/tmp/goblins-2vat-probe.scm` — two-vat goblins↔goblins testuds
-    self-test adapted from upstream
-    `projects/goblins/examples/try-base-netlayer.scm`. Hangs at the
-    A-side `with-vat`/`spawn-mycapn` boundary, same shape as the
-    minimal probe.
+  * `scripts/diagnostics/UPSTREAM-GOBLINS-ISSUE.md` — draft issue
+    text ready to file at `codeberg.org/spritely/goblins` after a
+    couple of cross-validation steps (testing standalone version of
+    upstream `examples/try-base-netlayer.scm`; testing on guile-goblins
+    0.18.0 / main HEAD).
+
+The server script's "ready" print is misleading: it's emitted
+inside the single `with-vat` block before that `with-vat` returns
+(or fails to return). Goblins keeps the vat process alive via the
+outer `(wait forever)`, but the netlayer's listen loop never
+actually fires.
 
 The cross-cutting symptom is that `(call-with-vat vat thunk)` from
 the top-level (no enclosing syscaller) does not return after the
