@@ -140,16 +140,19 @@ def fetch (s : Session) (swiss : List UInt8) : IO Nat := do
   return importPos
 
 /-- General `op:deliver`. Optionally allocate an answer slot and an
-rmd slot; returns the rmd position we used. -/
+rmd slot; returns `(rmdPos, ansPos)` where each component is
+`some n` iff the corresponding slot was allocated. (Position 0 is
+a real slot, so we never coerce `none` to `0`.) -/
 def deliver (s : Session) (toVal : ValueExt) (args : List ValueExt)
-    (withAnswer : Bool := false) (withRmd : Bool := true) : IO (Nat × Option Nat) := do
+    (withAnswer : Bool := false) (withRmd : Bool := true) :
+    IO (Option Nat × Option Nat) := do
   let rmdPos ← if withRmd then some <$> s.nextImport else pure none
   let ansPos ← if withAnswer then some <$> s.nextAnswer else pure none
   let rmd : ValueExt := match rmdPos with
     | some n => Session.buildDescImportObj n
     | none   => .bool false
   writeOpDeliver s toVal args ansPos rmd
-  return (rmdPos.getD 0, ansPos)
+  return (rmdPos, ansPos)
 
 /-- Listen on a promise position. Returns the rmd we used. -/
 def listen (s : Session) (promisePos : Nat) (wantsPartial : Bool := false) :
@@ -202,7 +205,8 @@ partial def expectFulfill (s : Session) (rmdPos : Nat)
         else return value
       | _ => return value
     else
-      throw (IO.userError s!"[client] expected fulfill, got {tag.length}-byte tag")
+      let tagStr := String.fromUTF8! ⟨tag.toArray⟩
+      throw (IO.userError s!"[client] expected fulfill, got tag \"{tagStr}\"")
   | _ => throw (IO.userError "[client] unexpected fulfill shape")
 
 end OcapnLean.Captp.Client

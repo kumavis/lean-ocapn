@@ -64,9 +64,10 @@ def main (args : List String) : IO Unit := do
 
   let myArgs : List ValueExt :=
     [ .str "hi".toUTF8.toList, .int 1, .bool false ]
-  let (rmd, _) ← Captp.Client.deliver s
+  let (some rmd, _) ← Captp.Client.deliver s
                    (Captp.Session.buildDescExport echoPos) myArgs
                    (withRmd := true)
+    | throw (IO.userError "[external-smoke] deliver did not allocate an rmd slot")
   let result ← Captp.Client.expectFulfill s rmd
   IO.println s!"[external-smoke] echo returned"
 

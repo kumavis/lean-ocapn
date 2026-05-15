@@ -74,8 +74,9 @@ def main : IO Unit := do
   -- Deliver to echo with rmd, expect fulfill with echoed args.
   let myArgs : List ValueExt :=
     [ .str "hi".toUTF8.toList, .int 1, .bool false ]
-  let (rmd, _) ← Captp.Client.deliver s (Captp.Session.buildDescExport echoExportPos)
+  let (some rmd, _) ← Captp.Client.deliver s (Captp.Session.buildDescExport echoExportPos)
                                        myArgs (withRmd := true)
+    | throw (IO.userError "[client] deliver did not allocate an rmd slot")
   let result ← Captp.Client.expectFulfill s rmd
   IO.println s!"[client] echo replied: {repr result}"
 
