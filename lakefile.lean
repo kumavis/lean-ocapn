@@ -21,10 +21,30 @@ def libsodium.defaultLibDir : String :=
   -- `1hbn13…` path is the 32-bit i386 build and would fail to link.
   "/nix/store/z4yz8jy4hipl0mvyj8dy77s5brajzviv-libsodium-1.0.21-unstable-2026-03-29/lib"
 
+/-- Sync env read for use in `moreLinkArgs`. The
+`@[implemented_by]` indirection makes the `unsafeBaseIO` lookup
+fire exactly once at module load — cleaner than scattering env
+reads through the build steps. -/
+unsafe def libsodium.readEnvOrImpl (var defaultVal : String) : String :=
+  (unsafeBaseIO (IO.getEnv var)).getD defaultVal
+
+@[implemented_by libsodium.readEnvOrImpl]
+opaque libsodium.readEnvOr (var defaultVal : String) : String
+
+def libsodium.libDirSync : String :=
+  libsodium.readEnvOr "LIBSODIUM_LIB" libsodium.defaultLibDir
+
 def libsodium.includeDir : IO String := do
   match ← IO.getEnv "LIBSODIUM_INCLUDE" with
   | some s => pure s
   | none   => pure libsodium.defaultIncludeDir
+
+/-- Library dir, env-overridable as `LIBSODIUM_LIB`. CI / non-nix
+hosts set this to `/usr/lib/x86_64-linux-gnu` or similar. -/
+def libsodium.libDir : IO String := do
+  match ← IO.getEnv "LIBSODIUM_LIB" with
+  | some s => pure s
+  | none   => pure libsodium.defaultLibDir
 
 input_file cryptoShimSrc where
   path := "c" / "crypto.c"
@@ -41,8 +61,8 @@ GLIBC_2.33 symbols (e.g. `fstat`) which the Lean toolchain's bundled
 glibc (≤2.26) doesn't export. The dynamic loader picks the system's
 glibc 2.42 at runtime, which has them. -/
 def sodiumLinkArgs : Array String := #[
-  s!"-L{libsodium.defaultLibDir}",
-  s!"-Wl,-rpath,{libsodium.defaultLibDir}",
+  s!"-L{libsodium.libDirSync}",
+  s!"-Wl,-rpath,{libsodium.libDirSync}",
   "-lsodium",
   "-Wl,--allow-shlib-undefined"
 ]
