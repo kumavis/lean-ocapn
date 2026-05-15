@@ -140,12 +140,12 @@ proof against `Captp.Spec`.
       (`lake exe ocapn-server`) — listens on TCP, accepts
       multiple connections, drives `Session.run` per connection
 - [x] **Wire-level cross-impl interop confirmed**:
-      `scripts/interop-start-session.py` and
-      `scripts/interop-fetch-echo-gc.py` use the upstream Python
-      Syrup encoder to drive our running server. The handshake
-      completes with the correct `captp-version` echo; an
-      `op:deliver` fetching the Echo-GC swissnum returns the
-      expected `[]` reply.
+      `scripts/interop-invalid-handshake.py` exercises the
+      handshake error paths under real Ed25519 crypto, and the
+      Lean-as-client driver (`lake exe client-vs-external`) runs
+      a full handshake + bootstrap-fetch + echo round-trip against
+      any OCapN peer. (Earlier placeholder-crypto interop scripts
+      were retired once the server began verifying signatures.)
 - [x] **First ocapn-test-suite test passes against our server:**
       `tests.op_start_session.OpStartSessionTest.test_captp_remote_version`
       — `ok` under the upstream `test_runner.py`. This requires the

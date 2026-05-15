@@ -58,8 +58,8 @@ ocapn-lean/
 │   ├── netlayer-echo.lean              TCP echo loopback smoke test
 │   ├── captp-framed-echo.lean          syrup-framed CapTP exchange over TCP
 │   ├── bootstrap-echo-gc.lean          end-to-end op:deliver/fetch routing
-│   ├── interop-start-session.py        Python ↔ Lean handshake interop
-│   ├── interop-fetch-echo-gc.py        Python ↔ Lean fetch interop
+│   ├── interop-invalid-handshake.py    real-crypto handshake error-path tests
+│   ├── ClientVsExternal.lean           Lean-as-client driver vs any OCapN peer
 │   ├── run-interop.sh                  captp-level harness skeleton
 │   └── regenerate-interop-fixtures.py  refresh syrup fixtures
 ├── docs/
@@ -77,9 +77,11 @@ ocapn-lean/
 # Terminal 1
 lake exe ocapn-server -- --port 22045
 
-# Terminal 2
-python3 scripts/interop-start-session.py    # handshake interop
-python3 scripts/interop-fetch-echo-gc.py    # fetch interop
+# Terminal 2 — drive the server end-to-end from the Lean client
+lake exe client-vs-external -- --port 22045
+# or exercise the error-path handshakes with real Ed25519 crypto:
+nix-shell -p "python3.withPackages (p: with p; [ cryptography stem ])" \
+  --command "python3 scripts/interop-invalid-handshake.py"
 ```
 
 ## Build
