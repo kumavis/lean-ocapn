@@ -24,4 +24,5 @@ import OcapnLean.Netlayer.Tcp
 import OcapnLean.Netlayer.Uds
 import OcapnLean.Server
 import OcapnLean.Syrup.Extended
+import OcapnLean.Syrup.RoundTripExt
 import OcapnLean.Test.Interop
