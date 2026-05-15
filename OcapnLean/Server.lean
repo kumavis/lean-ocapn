@@ -55,15 +55,18 @@ partial def acceptLoop
     (loc : ValueExt) (outboundReg : Session.OutboundRegistry)
     (gifts : Session.GiftsTable)
     (usedHandoffCounts : Session.HandoffCountSet)
-    (pendingWithdraws : Session.PendingWithdrawTable) : IO Unit := do
+    (pendingWithdraws : Session.PendingWithdrawTable)
+    (peerSessions : Session.PeerSessionRegistry) : IO Unit := do
   let net ← acceptOne
   let _ ← IO.asTask (prio := .dedicated) do
     try
       let conn ← FramedConn.of net
-      Session.run conn registry loc outboundReg gifts usedHandoffCounts pendingWithdraws
+      Session.run conn registry loc outboundReg gifts usedHandoffCounts
+                  pendingWithdraws peerSessions
     catch e =>
       IO.eprintln s!"[server] connection error: {e}"
-  acceptLoop acceptOne registry loc outboundReg gifts usedHandoffCounts pendingWithdraws
+  acceptLoop acceptOne registry loc outboundReg gifts usedHandoffCounts
+             pendingWithdraws peerSessions
 
 def main (args : List String) : IO Unit := do
   let port := parsePort args
@@ -76,4 +79,6 @@ def main (args : List String) : IO Unit := do
   let gifts ← Session.GiftsTable.create
   let usedHandoffCounts ← Session.HandoffCountSet.create
   let pendingWithdraws ← Session.PendingWithdrawTable.create
-  acceptLoop acceptOne registry loc outboundReg gifts usedHandoffCounts pendingWithdraws
+  let peerSessions ← Session.PeerSessionRegistry.create
+  acceptLoop acceptOne registry loc outboundReg gifts usedHandoffCounts
+             pendingWithdraws peerSessions

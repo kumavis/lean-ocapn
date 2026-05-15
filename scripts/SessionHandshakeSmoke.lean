@@ -47,10 +47,11 @@ def main : IO Unit := do
   let gifts ← Session.GiftsTable.create
   let usedHandoffCounts ← Session.HandoffCountSet.create
   let pendingWithdraws ← Session.PendingWithdrawTable.create
+  let peerSessions ← Session.PeerSessionRegistry.create
   let _serverTask ← IO.asTask (prio := .dedicated) do
     let net ← acceptOne
     let conn ← FramedConn.of net
-    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc outboundReg gifts usedHandoffCounts pendingWithdraws
+    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc outboundReg gifts usedHandoffCounts pendingWithdraws peerSessions
 
   IO.sleep 50
 
