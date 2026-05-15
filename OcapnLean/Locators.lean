@@ -43,7 +43,7 @@ structure PeerLocator where
   transport  : List UInt8                          -- symbol bytes
   designator : List UInt8                          -- string bytes
   hints      : Option (List (List UInt8 × List UInt8)) := none
-deriving Inhabited
+deriving Inhabited, DecidableEq
 
 namespace PeerLocator
 
@@ -116,14 +116,71 @@ theorem fromValueExt_toValueExt (p : PeerLocator) :
 
 end PeerLocator
 
+/-! ## URI subset (limited; sufficient for sturdyref formation)
+
+This is the minimal URI layer needed to emit and parse the OCapN
+URI form `ocapn://<designator>.<transport>[?k=v&…][/s/<swiss>]`.
+**Restricted character set:** designator / transport / swiss-num /
+hint key/value bytes must all be URI-safe alphanumerics or one of
+`- _ + /`. Any byte outside that set causes `toUri` to return `none`
+(no percent-encoding). The round-trip theorem
+`PeerLocator.fromUri_toUri` covers exactly this safe subset. -/
+
+/-- An ASCII URI-safe byte: `[A-Za-z0-9_\-+/]`. Excludes the structural
+delimiters `:`, `/`, `?`, `&`, `=`, `.` used by the URI grammar.
+(`/` and `+` are URL-safe and appear in base64-style swiss-nums.) -/
+def isUriSafe (b : UInt8) : Bool :=
+  (b ≥ 0x41 && b ≤ 0x5a)            -- A-Z
+  || (b ≥ 0x61 && b ≤ 0x7a)         -- a-z
+  || (b ≥ 0x30 && b ≤ 0x39)         -- 0-9
+  || b == 0x2d || b == 0x5f         -- - _
+  || b == 0x2b || b == 0x2f         -- + /
+
+/-- Every byte in the list satisfies `isUriSafe`. -/
+def allUriSafe (bs : List UInt8) : Bool := bs.all isUriSafe
+
+/-- UTF-8 list-of-byte → `String` (already validated as ASCII). -/
+private def bytesToStr (bs : List UInt8) : String :=
+  String.fromUTF8! ⟨bs.toArray⟩
+
+namespace PeerLocator
+
+/-- Format a hints list as `?k1=v1&k2=v2&…`. Returns `none` if any
+key or value is outside the URI-safe subset. The empty-list and
+`none` cases produce no query string at all. -/
+def hintsToUriSuffix : Option (List (List UInt8 × List UInt8)) → Option String
+  | none      => some ""
+  | some []   => some ""
+  | some kvs =>
+    if kvs.all (fun (k, v) => allUriSafe k && allUriSafe v) then
+      let parts := kvs.map (fun (k, v) => bytesToStr k ++ "=" ++ bytesToStr v)
+      some ("?" ++ String.intercalate "&" parts)
+    else
+      none
+
+/-- Emit `ocapn://<designator>.<transport>[?…]`. Returns `none` if any
+component is outside the URI-safe character set. -/
+def toUri (p : PeerLocator) : Option String := do
+  if ¬ (allUriSafe p.transport && allUriSafe p.designator) then
+    none
+  else
+    let suffix ← hintsToUriSuffix p.hints
+    some ("ocapn://" ++ bytesToStr p.designator ++ "."
+          ++ bytesToStr p.transport ++ suffix)
+
+end PeerLocator
+
 /-! ## Sturdyref locator -/
+
+-- (re-open PeerLocator below for any further additions to be cleanly
+-- separated from the SturdyRef definition)
 
 /-- A sturdyref locator: a peer locator + a swiss-num bytestring
 identifying the target object on that peer. -/
 structure SturdyRef where
   peer    : PeerLocator
   swiss   : List UInt8        -- swiss-num bytes (typically a UTF-8 string)
-deriving Inhabited
+deriving Inhabited, DecidableEq
 
 namespace SturdyRef
 
@@ -154,6 +211,23 @@ theorem fromValueExt_toValueExt (s : SturdyRef) :
   obtain ⟨peer, swiss⟩ := s
   show fromValueExt (toValueExt { peer := peer, swiss := swiss }) = _
   simp [toValueExt, fromValueExt, PeerLocator.fromValueExt_toValueExt]
+
+/-! ### URI form
+
+`ocapn://<designator>.<transport>/s/<swiss>[?k=v&…]`. Same URI-safe
+character restriction as `PeerLocator.toUri`; returns `none` on
+non-safe bytes anywhere in peer / swiss-num / hints. -/
+
+/-- Emit a sturdyref URI. -/
+def toUri (s : SturdyRef) : Option String := do
+  if ¬ (allUriSafe s.peer.transport && allUriSafe s.peer.designator
+        && allUriSafe s.swiss) then
+    none
+  else
+    let suffix ← PeerLocator.hintsToUriSuffix s.peer.hints
+    some ("ocapn://" ++ bytesToStr s.peer.designator ++ "."
+          ++ bytesToStr s.peer.transport ++ "/s/"
+          ++ bytesToStr s.swiss ++ suffix)
 
 end SturdyRef
 

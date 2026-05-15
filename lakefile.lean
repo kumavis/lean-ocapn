@@ -137,6 +137,7 @@ lean_lib OcapnLean where
     `OcapnLean.Syrup.Extended,
     `OcapnLean.Syrup.RoundTripExt,
     `OcapnLean.Locators,
+    `OcapnLean.Test.Locators,
     `OcapnLean.Captp.Messages,
     `OcapnLean.Captp.Spec,
     `OcapnLean.Captp.Twoparty,
