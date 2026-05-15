@@ -44,10 +44,13 @@ def main : IO Unit := do
   -- Spin up the server side in a dedicated task.
   let acceptOne ← Tcp.listen addr
   let outboundReg ← Session.OutboundRegistry.create
+  let gifts ← Session.GiftsTable.create
+  let usedHandoffCounts ← Session.HandoffCountSet.create
+  let pendingWithdraws ← Session.PendingWithdrawTable.create
   let _serverTask ← IO.asTask (prio := .dedicated) do
     let net ← acceptOne
     let conn ← FramedConn.of net
-    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc outboundReg
+    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc outboundReg gifts usedHandoffCounts pendingWithdraws
 
   IO.sleep 50
 

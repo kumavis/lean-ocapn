@@ -127,10 +127,13 @@ def main : IO Unit := do
   -- Spin up primary server.
   let primaryAccept ← Tcp.listen primaryAddr
   let primaryOutboundReg ← Session.OutboundRegistry.create
+  let primaryGifts ← Session.GiftsTable.create
+  let primaryUsedCounts ← Session.HandoffCountSet.create
+  let primaryPending ← Session.PendingWithdrawTable.create
   let _primaryTask ← IO.asTask (prio := .dedicated) do
     let net ← primaryAccept
     let conn ← FramedConn.of net
-    Captp.Session.run conn Bootstrap.defaultRegistry primaryLoc primaryOutboundReg
+    Captp.Session.run conn Bootstrap.defaultRegistry primaryLoc primaryOutboundReg primaryGifts primaryUsedCounts primaryPending
 
   -- Spin up "other" server with an okRef.
   let okRef ← IO.mkRef false

@@ -52,15 +52,18 @@ the inbound handshake can detect a crossed-hellos race against any of
 our pending outbound sessions. -/
 partial def acceptLoop
     (acceptOne : IO Netlayer) (registry : Bootstrap.Registry)
-    (loc : ValueExt) (outboundReg : Session.OutboundRegistry) : IO Unit := do
+    (loc : ValueExt) (outboundReg : Session.OutboundRegistry)
+    (gifts : Session.GiftsTable)
+    (usedHandoffCounts : Session.HandoffCountSet)
+    (pendingWithdraws : Session.PendingWithdrawTable) : IO Unit := do
   let net ← acceptOne
   let _ ← IO.asTask (prio := .dedicated) do
     try
       let conn ← FramedConn.of net
-      Session.run conn registry loc outboundReg
+      Session.run conn registry loc outboundReg gifts usedHandoffCounts pendingWithdraws
     catch e =>
       IO.eprintln s!"[server] connection error: {e}"
-  acceptLoop acceptOne registry loc outboundReg
+  acceptLoop acceptOne registry loc outboundReg gifts usedHandoffCounts pendingWithdraws
 
 def main (args : List String) : IO Unit := do
   let port := parsePort args
@@ -70,4 +73,7 @@ def main (args : List String) : IO Unit := do
   let registry := Bootstrap.defaultRegistry
   let loc := ourLocation port
   let outboundReg ← Session.OutboundRegistry.create
-  acceptLoop acceptOne registry loc outboundReg
+  let gifts ← Session.GiftsTable.create
+  let usedHandoffCounts ← Session.HandoffCountSet.create
+  let pendingWithdraws ← Session.PendingWithdrawTable.create
+  acceptLoop acceptOne registry loc outboundReg gifts usedHandoffCounts pendingWithdraws

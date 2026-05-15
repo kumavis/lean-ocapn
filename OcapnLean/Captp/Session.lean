@@ -54,16 +54,21 @@ open Std.Net
 /-- The captp-version this implementation speaks. -/
 def captpVersion : String := "1.0"
 
-def opStartSessionSym  : List UInt8 := "op:start-session".toUTF8.toList
-def opDeliverSym       : List UInt8 := "op:deliver".toUTF8.toList
-def opAbortSym         : List UInt8 := "op:abort".toUTF8.toList
-def opListenSym        : List UInt8 := "op:listen".toUTF8.toList
-def opGcExportsSym     : List UInt8 := "op:gc-exports".toUTF8.toList
-def opGcAnswersSym     : List UInt8 := "op:gc-answers".toUTF8.toList
-def descExportSym      : List UInt8 := "desc:export".toUTF8.toList
-def descAnswerSym      : List UInt8 := "desc:answer".toUTF8.toList
-def descImportObjSym   : List UInt8 := "desc:import-object".toUTF8.toList
+def opStartSessionSym    : List UInt8 := "op:start-session".toUTF8.toList
+def opDeliverSym         : List UInt8 := "op:deliver".toUTF8.toList
+def opAbortSym           : List UInt8 := "op:abort".toUTF8.toList
+def opListenSym          : List UInt8 := "op:listen".toUTF8.toList
+def opGcExportsSym       : List UInt8 := "op:gc-exports".toUTF8.toList
+def opGcAnswersSym       : List UInt8 := "op:gc-answers".toUTF8.toList
+def descExportSym        : List UInt8 := "desc:export".toUTF8.toList
+def descAnswerSym        : List UInt8 := "desc:answer".toUTF8.toList
+def descImportObjSym     : List UInt8 := "desc:import-object".toUTF8.toList
 def descImportPromiseSym : List UInt8 := "desc:import-promise".toUTF8.toList
+def descSigEnvelopeSym   : List UInt8 := "desc:sig-envelope".toUTF8.toList
+def descHandoffGiveSym   : List UInt8 := "desc:handoff-give".toUTF8.toList
+def descHandoffReceiveSym: List UInt8 := "desc:handoff-receive".toUTF8.toList
+def depositGiftSym       : List UInt8 := "deposit-gift".toUTF8.toList
+def withdrawGiftSym      : List UInt8 := "withdraw-gift".toUTF8.toList
 def myLocationSym      : List UInt8 := "my-location".toUTF8.toList
 def fetchSym           : List UInt8 := "fetch".toUTF8.toList
 def fulfillSym         : List UInt8 := "fulfill".toUTF8.toList
@@ -283,6 +288,60 @@ def remove (r : OutboundRegistry) (k : PeerKey) : IO Unit :=
 
 end OutboundRegistry
 
+/-! ## Three-party handoffs: gifts table.
+
+When a gifter session deposits a gift via
+`<op:deliver <desc:export 0> [deposit-gift <gift-id> <refr>] _ _>`,
+the exporter (us) stores the referenced handler keyed by
+`(gifter-session-id, gift-id)`. A separate receiver session later
+withdraws it via `[withdraw-gift <signed-handoff-receive>]`.
+
+We also remember which `(receiving-session-id, handoff-count)`
+pairs we've already honoured so that replayed handoff-counts break. -/
+
+abbrev SessionId := ByteArray
+
+/-- Forward-declaration trick: gifts must hold a handler-shaped
+value, but `SessionHandler` is defined after we've declared the
+registry containers. The handler type is parameterised below. -/
+structure Gift where
+  /-- The exported handler the gifter pointed at. We share the
+  reference verbatim; it'll be installed at a fresh export position
+  on the receiver's session when they withdraw. -/
+  handler : List ValueExt → ValueExt → Option Nat → IO (List ValueExt)
+
+abbrev GiftsTable :=
+  IO.Ref (List ((SessionId × List UInt8) × Gift))
+
+abbrev HandoffCountSet :=
+  IO.Ref (List (SessionId × Nat))
+
+namespace GiftsTable
+def create : IO GiftsTable := IO.mkRef []
+def deposit (g : GiftsTable) (sid : SessionId) (giftId : List UInt8)
+    (gift : Gift) : IO Unit :=
+  g.modify (((sid, giftId), gift) :: ·)
+def lookup (g : GiftsTable) (sid : SessionId) (giftId : List UInt8) :
+    IO (Option Gift) := do
+  let xs ← g.get
+  return (xs.find? (fun ((s, gid), _) =>
+    s.toList = sid.toList && gid = giftId)).map (·.2)
+end GiftsTable
+
+namespace HandoffCountSet
+def create : IO HandoffCountSet := IO.mkRef []
+def hasBeenUsed (s : HandoffCountSet) (sid : SessionId) (cnt : Nat) :
+    IO Bool := do
+  let xs ← s.get
+  return xs.any fun (s', c) => s'.toList = sid.toList && c = cnt
+def markUsed (s : HandoffCountSet) (sid : SessionId) (cnt : Nat) : IO Unit :=
+  s.modify ((sid, cnt) :: ·)
+end HandoffCountSet
+
+-- PendingWithdrawTable's namespace lives later in the file, after
+-- PromiseState and Export are declared (those types are needed by
+-- PendingWithdrawEntry's fields).
+
 /-! ## Per-session handler type and state.
 
 `SessionHandler` is what an export-position is bound to. It receives
@@ -348,6 +407,41 @@ inductive Export
   | actor   (h : SessionHandler)
   | promise (state : IO.Ref PromiseState)
 
+/-! ## Pending withdraws (continued).
+
+`PendingWithdrawEntry` and `PendingWithdrawTable` need `PromiseState`
+and `Export` to be in scope, so their definitions land here rather
+than alongside the rest of the handoff types. -/
+
+structure PendingWithdrawEntry where
+  promiseRef : IO.Ref PromiseState
+  /-- Receiver's connection; used to write the listen-notification
+  frame once the promise resolves. -/
+  conn : FramedConn
+  /-- Receiver's exports table; deposit-gift allocates a fresh
+  export slot here bound to the gift's handler. -/
+  exportsRef : IO.Ref (Array Export)
+
+abbrev PendingWithdrawTable :=
+  IO.Ref (List ((SessionId × List UInt8) × PendingWithdrawEntry))
+
+namespace PendingWithdrawTable
+def create : IO PendingWithdrawTable := IO.mkRef []
+
+def add (t : PendingWithdrawTable) (sid : SessionId) (giftId : List UInt8)
+    (entry : PendingWithdrawEntry) : IO Unit :=
+  t.modify (((sid, giftId), entry) :: ·)
+
+/-- Atomically remove and return every entry whose key matches
+`(sid, giftId)`. -/
+def drain (t : PendingWithdrawTable) (sid : SessionId) (giftId : List UInt8) :
+    IO (List PendingWithdrawEntry) := do
+  t.modifyGet fun xs =>
+    let (matched, rest) := xs.partition
+      fun ((s, g), _) => s.toList = sid.toList && g = giftId
+    (matched.map (·.2), rest)
+end PendingWithdrawTable
+
 /-- An *answer* is the server-side state of a pipelined call. The
 caller passed an `answer-position` and may follow up with messages
 targeting `<desc:answer N>` before our handler has had a chance to
@@ -392,6 +486,23 @@ structure State where
   Each time we send an `op:deliver` to the peer expecting a reply,
   we burn one of these and later GC it via `op:gc-answers`. -/
   nextOutgoingAnswer : IO.Ref Nat
+  /-- The peer's session pubkey record, captured from their inbound
+  `op:start-session`. Used to derive this session's Session ID per
+  spec §"Session ID". -/
+  peerPubkey         : IO.Ref (Option ValueExt)
+  /-- Server-wide gifts table for three-party handoffs. -/
+  gifts              : GiftsTable
+  /-- Server-wide set of receiver-side `(session-id, handoff-count)`
+  pairs we've already honoured (to reject replayed handoffs). -/
+  usedHandoffCounts  : HandoffCountSet
+  /-- Server-wide table of `withdraw-gift` calls whose gift wasn't
+  yet deposited. The corresponding `deposit-gift` drains entries
+  for the matching key and resolves each promise. -/
+  pendingWithdraws   : PendingWithdrawTable
+  /-- This session's connection — captured so a *different* session
+  (the gifter, when handling deposit-gift) can write a fulfill frame
+  to *us* when our pending withdraw resolves. -/
+  conn               : FramedConn
 
 namespace State
 
@@ -399,16 +510,21 @@ namespace State
 keypair is generated per connection (matching the spec's "per-session
 keypair" rule). -/
 def create (ourLocation : ValueExt) (registry : Registry)
-    (outboundReg : OutboundRegistry) : IO State := do
+    (outboundReg : OutboundRegistry) (gifts : GiftsTable)
+    (usedHandoffCounts : HandoffCountSet)
+    (pendingWithdraws : PendingWithdrawTable)
+    (conn : FramedConn) : IO State := do
   let handshakeDone ← IO.mkRef false
   let aborted       ← IO.mkRef false
   let (pk, sk)      ← Crypto.ed25519Keypair
   let exports       ← IO.mkRef (#[] : Array Export)
   let answers       ← IO.mkRef ([] : List (Nat × AnswerState))
   let nextOutgoingAnswer ← IO.mkRef 1
+  let peerPubkey    ← IO.mkRef (none : Option ValueExt)
   pure { handshakeDone, aborted, ourLocation,
          sessionPubkey := pk, sessionSecret := sk,
-         registry, exports, outboundReg, answers, nextOutgoingAnswer }
+         registry, exports, outboundReg, answers, nextOutgoingAnswer,
+         peerPubkey, gifts, usedHandoffCounts, pendingWithdraws, conn }
 
 /-- Bind an actor handler at a fresh export position. -/
 def exportAllocateActor (st : State) (h : SessionHandler) : IO Nat := do
@@ -649,6 +765,35 @@ We compare bytewise to resolve crossed hellos. -/
 def publicIdentifier (pubkeyRec : ValueExt) : ByteArray :=
   Crypto.sha256d (listToBa (Encode.encodeExt pubkeyRec))
 
+/-- Lexicographic comparison on `List UInt8` — used to sort the two
+public identifiers when computing a Session ID. -/
+def listUInt8LE (a b : List UInt8) : Bool :=
+  let rec go : List UInt8 → List UInt8 → Bool
+    | [],      _       => true
+    | _ :: _,  []      => false
+    | x :: xs, y :: ys =>
+        if x < y then true else if x > y then false else go xs ys
+  go a b
+
+/-- Concatenate two `ByteArray`s. -/
+def baAppend (a b : ByteArray) : ByteArray :=
+  ByteArray.mk ((a.toList ++ b.toList).toArray)
+
+/-- The Session ID for a session between two peers given their
+pubkey records, per spec §"Session ID":
+
+  1. Public Identifier of each side.
+  2. Sort by bytes.
+  3. Concatenate with `"prot0"` prefix.
+  4. SHA-256 twice. -/
+def sessionId (ourPk theirPk : ValueExt) : ByteArray :=
+  let a := publicIdentifier ourPk
+  let b := publicIdentifier theirPk
+  let (lo, hi) :=
+    if listUInt8LE a.toList b.toList then (a, b) else (b, a)
+  let prefixBA : ByteArray := ByteArray.mk "prot0".toUTF8.toList.toArray
+  Crypto.sha256 (Crypto.sha256 (baAppend (baAppend prefixBA lo) hi))
+
 /-- Bytewise comparison of two `ByteArray`s — returns `.lt`/`.eq`/`.gt`.
 Used to pick the loser of a crossed-hellos race. -/
 def byteArrayCmp (a b : ByteArray) : Ordering :=
@@ -667,6 +812,69 @@ def byteArrayCmp (a b : ByteArray) : Ordering :=
       simp_wf
       omega
   go 0
+
+/-! ## Three-party handoff wire types.
+
+A `<desc:sig-envelope INNER SIG>` packages a signed value. We use it
+for both `desc:handoff-give` (signed by the gifter session's
+privkey) and `desc:handoff-receive` (signed by the receiver's
+privkey from the gifter↔receiver pair).
+
+A `<desc:handoff-give receiver-key exporter-location session
+gifter-side gift-id>` describes a gift the gifter has deposited at
+the exporter.
+
+A `<desc:handoff-receive receiving-session receiving-side
+handoff-count signed-give>` is the receiver's countersigned proof
+that they're authorised to withdraw the gift. -/
+
+/-- Parse a `<desc:sig-envelope INNER SIG>` into `(INNER, sigBytes)`. -/
+def parseSigEnvelope (v : ValueExt) : Option (ValueExt × List UInt8) :=
+  match v with
+  | .record (.sym lbl) [inner, sigVal] =>
+      if lbl ≠ descSigEnvelopeSym then none
+      else (extractSig sigVal).map (fun s => (inner, s))
+  | _ => none
+
+/-- Parse `<desc:handoff-give recv-key exporter-loc session gifter-side gift-id>`
+into its 5-tuple. We keep `recv-key` and `exporter-loc` as `ValueExt`
+because their structure varies; the byte/list fields are extracted. -/
+structure ParsedHandoffGive where
+  receiverKey      : ValueExt    -- gcrypt pubkey record
+  exporterLocation : ValueExt    -- <ocapn-peer …>
+  session          : List UInt8  -- 32-byte session id
+  gifterSide       : List UInt8  -- 32-byte public identifier
+  giftId           : List UInt8  -- bytes
+
+def parseHandoffGive (v : ValueExt) : Option ParsedHandoffGive :=
+  match v with
+  | .record (.sym lbl)
+      [recvKey, exporterLoc, .bytes session, .bytes gifterSide, .bytes giftId] =>
+    if lbl = descHandoffGiveSym then
+      some { receiverKey := recvKey
+           , exporterLocation := exporterLoc
+           , session, gifterSide, giftId }
+    else none
+  | _ => none
+
+/-- Parse `<desc:handoff-receive recv-session recv-side handoff-count signed-give>`. -/
+structure ParsedHandoffReceive where
+  receivingSession : List UInt8
+  receivingSide    : List UInt8
+  handoffCount     : Nat
+  signedGive       : ValueExt   -- the inner <desc:sig-envelope <desc:handoff-give …> SIG>
+
+def parseHandoffReceive (v : ValueExt) : Option ParsedHandoffReceive :=
+  match v with
+  | .record (.sym lbl)
+      [.bytes recvSession, .bytes recvSide, .int hc, sg] =>
+    if lbl = descHandoffReceiveSym && hc ≥ 0 then
+      some { receivingSession := recvSession
+           , receivingSide := recvSide
+           , handoffCount := hc.toNat
+           , signedGive := sg }
+    else none
+  | _ => none
 
 /-! ## Outbound op:start-session.
 
@@ -903,6 +1111,134 @@ def mkCarFactoryBuilderHandler (st : State) : SessionHandler :=
     | some rmPos => return [buildFulfillValue rmPos (buildDescImportObj factoryPos)]
     | none => return []
 
+/-! ## Withdraw-gift and deposit-gift handlers.
+
+`[withdraw-gift <signed-handoff-receive>]` arrives on the receiver
+session. We:
+
+  1. Parse and verify the outer sig-envelope's signature against the
+     receiver-key embedded in the inner handoff-give.
+  2. Reject if the `handoff-count` has already been used on this
+     receiving session.
+  3. Look up the gift in our server-wide gifts table keyed by
+     `(gifter-session-id, gift-id)`. If present, fulfill with a
+     fresh `<desc:import-object>` immediately. Otherwise register a
+     pending withdraw and fulfill with a `<desc:import-promise>`
+     that resolves when `deposit-gift` lands later.
+
+On any verification failure we reply `[break <reason>]` if the
+caller passed a resolve-me-desc. -/
+def withdrawGift (st : State) (signedHandoffReceive : ValueExt)
+    (rmd : ValueExt) : IO (List ValueExt) := do
+  let breakWith (reason : String) : IO (List ValueExt) := do
+    IO.eprintln s!"[session][withdraw-gift] {reason}"
+    match extractImportObjPos rmd with
+    | some rmPos =>
+      return [buildBreakValue rmPos (.str reason.toUTF8.toList)]
+    | none => return []
+  match parseSigEnvelope signedHandoffReceive with
+  | none => breakWith "malformed sig-envelope"
+  | some (innerReceive, recvSig) =>
+    match parseHandoffReceive innerReceive with
+    | none => breakWith "malformed handoff-receive"
+    | some phr =>
+      match parseSigEnvelope phr.signedGive with
+      | none => breakWith "malformed inner sig-envelope"
+      | some (innerGive, _giveSig) =>
+        match parseHandoffGive innerGive with
+        | none => breakWith "malformed handoff-give"
+        | some phg =>
+          let recvPk := phg.receiverKey
+          let payload := listToBa (Encode.encodeExt innerReceive)
+          if recvSig.length ≠ 64 then breakWith "wrong signature length"
+          else match extractPubkey recvPk with
+            | none => breakWith "receiver pubkey not extractable"
+            | some pkBytes =>
+              if pkBytes.length ≠ 32 then breakWith "wrong pubkey length"
+              else if ¬ Crypto.ed25519Verify (listToBa pkBytes) payload
+                          (listToBa recvSig) then
+                breakWith "handoff-receive signature invalid"
+              else do
+                let receivingSid : SessionId :=
+                  ByteArray.mk phr.receivingSession.toArray
+                let already ←
+                  st.usedHandoffCounts.hasBeenUsed receivingSid phr.handoffCount
+                if already then breakWith "handoff-count already used"
+                else do
+                  st.usedHandoffCounts.markUsed receivingSid phr.handoffCount
+                  let gifterSid : SessionId :=
+                    ByteArray.mk phg.session.toArray
+                  match ← st.gifts.lookup gifterSid phg.giftId with
+                  | some gift =>
+                    let newPos ← st.exportAllocateActor gift.handler
+                    IO.eprintln s!"[session][withdraw-gift] resolved → export {newPos}"
+                    match extractImportObjPos rmd with
+                    | some rmPos =>
+                      return [buildFulfillValue rmPos (buildDescImportObj newPos)]
+                    | none => return []
+                  | none =>
+                    -- Gift not deposited yet. Promise out and queue.
+                    let (promisePos, promiseRef) ← st.exportAllocatePromise
+                    st.pendingWithdraws.add gifterSid phg.giftId
+                      { promiseRef, conn := st.conn, exportsRef := st.exports }
+                    IO.eprintln s!"[session][withdraw-gift] gift absent, returning promise {promisePos}"
+                    match extractImportObjPos rmd with
+                    | some rmPos =>
+                      return [buildFulfillValue rmPos (buildDescImportPromise promisePos)]
+                    | none => return []
+
+/-- Resolve one pending withdraw entry by allocating a fresh export
+in the receiver's session and notifying any current listeners. -/
+def firePendingWithdraw (gift : Gift) (entry : PendingWithdrawEntry) :
+    IO Unit := do
+  -- Allocate the receiver-side export atomically.
+  let q : Nat ← entry.exportsRef.modifyGet fun (arr : Array Export) =>
+    (arr.size + 1, arr.push (Export.actor gift.handler))
+  let resolutionValue := buildDescImportObj q
+  -- Flip the promise from pending → fulfilled; grab listeners.
+  let listeners : List Nat ← entry.promiseRef.modifyGet fun (s : PromiseState) =>
+    match s with
+    | PromiseState.pending ls => (ls, PromiseState.fulfilled resolutionValue)
+    | other                    => ([], other)
+  -- Notify each listener over the receiver's connection.
+  for l in listeners do
+    try entry.conn.writeFrame (buildFulfillValue l resolutionValue)
+    catch e =>
+      IO.eprintln s!"[session][deposit-gift] write to receiver failed: {e}"
+
+/-- `[deposit-gift <giftId> <refr>]` from a gifter session. We
+record the referenced actor in the server-wide gifts table and also
+drain any pending withdraws waiting on this `(sid, giftId)`. -/
+def depositGift (st : State) (giftId : List UInt8) (refr : ValueExt) :
+    IO (List ValueExt) := do
+  match extractExportPos refr with
+  | none =>
+    IO.eprintln "[session][deposit-gift] refr is not <desc:export N>"
+    return []
+  | some n =>
+    match ← st.exportLookup n with
+    | some (.actor h) => do
+      let peer? ← st.peerPubkey.get
+      match peer? with
+      | none =>
+        IO.eprintln "[session][deposit-gift] before handshake; ignoring"
+        return []
+      | some peerPk =>
+        let sid := sessionId
+          (buildSessionPubkey (baToList st.sessionPubkey)) peerPk
+        let gift : Gift := { handler := h }
+        -- Drain pending withdraws first so any new lookups race-safe see
+        -- the gift via the table.
+        let entries ← st.pendingWithdraws.drain sid giftId
+        for entry in entries do
+          firePendingWithdraw gift entry
+        st.gifts.deposit sid giftId gift
+        IO.eprintln s!"[session][deposit-gift] giftId.len={giftId.length} drained={entries.length} pending"
+        return []
+    | _ =>
+      IO.eprintln s!"[session][deposit-gift] position {n} is not an actor"
+      return []
+
 /-- Convert one of `OcapnLean.Captp.Bootstrap`'s value-returning
 handlers (`List ValueExt → IO ValueExt`) into a `SessionHandler` with
 fulfill-on-rmd semantics. If `rmd` is `<desc:import-object N>`, the
@@ -973,28 +1309,40 @@ def dispatchOpDeliverCore (st : State) (toVal : ValueExt) (args : List ValueExt)
     IO.eprintln "[session] op:deliver to non-<desc:export …>; ignoring"
     return []
   | some 0 =>
-    -- Bootstrap object: only `fetch` is supported.
+    -- Bootstrap object methods.
     match args with
     | [.sym method, .bytes swiss] =>
-      if method ≠ fetchSym then
+      if method = fetchSym then
+        match resolveSwissnum st swiss with
+        | none =>
+          IO.eprintln "[session] fetch: unknown swissnum"
+          return []
+        | some h =>
+          let newPos ← st.exportAllocateActor h
+          match answerPos with
+          | some ap => st.answersResolve ap (.resolved newPos)
+          | none => pure ()
+          match extractImportObjPos rmd with
+          | none =>
+            IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
+            return []
+          | some rmPos =>
+            IO.eprintln s!"[session] fetch resolved → export pos {newPos}, fulfilling rm={rmPos}"
+            return [buildFulfillDeliver rmPos newPos]
+      else
         IO.eprintln s!"[session] bootstrap method {String.fromUTF8! ⟨method.toArray⟩} not supported"
         return []
-      match resolveSwissnum st swiss with
-      | none =>
-        IO.eprintln "[session] fetch: unknown swissnum"
+    | [.sym method, .bytes giftId, refr] =>
+      if method = depositGiftSym then depositGift st giftId refr
+      else do
+        IO.eprintln s!"[session] bootstrap 3-arg method not supported"
         return []
-      | some h =>
-        let newPos ← st.exportAllocateActor h
-        match answerPos with
-        | some ap => st.answersResolve ap (.resolved newPos)
-        | none => pure ()
-        match extractImportObjPos rmd with
-        | none =>
-          IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
-          return []
-        | some rmPos =>
-          IO.eprintln s!"[session] fetch resolved → export pos {newPos}, fulfilling rm={rmPos}"
-          return [buildFulfillDeliver rmPos newPos]
+    | [.sym method, signedHandoffReceive] =>
+      if method = withdrawGiftSym then
+        withdrawGift st signedHandoffReceive rmd
+      else
+        IO.eprintln s!"[session] bootstrap 2-arg method not supported"
+        return []
     | _ =>
       IO.eprintln "[session] bootstrap call with unsupported args shape"
       return []
@@ -1109,6 +1457,7 @@ def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
         | some abortFrame => return [abortFrame]
         | none =>
           st.handshakeDone.set true
+          st.peerPubkey.set (some clientPk)
           let payload := locationSigningPayload st.ourLocation
           let sig     := Crypto.ed25519Sign st.sessionSecret payload
           let reply   := buildStartSessionReply (baToList st.sessionPubkey) sig st.ourLocation
@@ -1154,8 +1503,11 @@ def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
 
 /-- Run a session: build state, dispatch frames in a loop. -/
 def run (conn : FramedConn) (registry : Registry) (ourLocation : ValueExt)
-    (outboundReg : OutboundRegistry) : IO Unit := do
-  let st ← State.create ourLocation registry outboundReg
+    (outboundReg : OutboundRegistry) (gifts : GiftsTable)
+    (usedHandoffCounts : HandoffCountSet)
+    (pendingWithdraws : PendingWithdrawTable) : IO Unit := do
+  let st ← State.create ourLocation registry outboundReg gifts
+                        usedHandoffCounts pendingWithdraws conn
   runHandlerN conn (dispatch st)
 
 end OcapnLean.Captp.Session
