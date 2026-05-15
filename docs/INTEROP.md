@@ -326,10 +326,12 @@ Possible root causes (not yet conclusive):
     incoming connections aren't being accepted.
 
 This is a Goblins-side environmental/runtime bug, separate from the
-wire-format disagreements above. Tracked here for the record; an
-upstream issue against `codeberg.org/spritely/goblins` is the right
-next step but I haven't filed it because the reproduction story is
-still fuzzy and depends on host fibers behaviour.
+wire-format disagreements above. A draft upstream issue is committed
+at [`scripts/diagnostics/UPSTREAM-GOBLINS-ISSUE.md`](../scripts/diagnostics/UPSTREAM-GOBLINS-ISSUE.md);
+filing it is gated on two cross-validation steps (standalone version
+of upstream `examples/try-base-netlayer.scm`; re-test on goblins
+0.18.0 / main HEAD) so we can be sure the bug is reproducible outside
+our setup.
 
 ## Upstream follow-ups (drafts)
 
@@ -392,7 +394,10 @@ stays spec-conformant.
   `8ad615b` / `d78446e`.
 
 * This validates ocapn-lean against the Python reference *and*
-  against an independent TypeScript implementation. It does *not*
-  yet validate ocapn-lean's behaviour as a CapTP **client** against
-  Goblins or Ridley over real wire — Goblins is blocked on
-  Disagreement 1; Ridley is pending Dart-SDK re-verification.
+  against an independent TypeScript implementation. Client-side
+  interop against Goblins and Ridley over real wire remains blocked
+  by impl-specific bugs (not by ocapn-lean): Goblins by the testuds
+  silent-handshake runtime issue (see above); Ridley by Disagreement
+  4 (netstring framing on `tcp-testing-only`). Both are documented
+  with reproducers in this repo and upstream-issue drafts pending
+  cross-validation before filing.

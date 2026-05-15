@@ -1,6 +1,6 @@
 # `ocapn-lean` — Roadmap
 
-> **Status:** draft, 2026-05-14. Companion to [PLAN.md](./PLAN.md).
+> **Status:** draft, 2026-05-15. Companion to [PLAN.md](./PLAN.md).
 > **Cadence:** each milestone closes when the named deliverables exist and
 > `lake build` is green.
 
@@ -17,22 +17,32 @@ Goal: empty Veil project that builds.
 
 **Exit criteria met.**
 
-## Milestone M1 — Data model and codec _(2026-05-26)_
+## Milestone M1 — Data model and codec _(largely done 2026-05-15)_
 
 Goal: faithful OCapN data model and Syrup encoder/decoder with proved
 round-trip.
 
-- [ ] `OcapnLean/Model.lean` — `inductive Value` (Atom + Container + Reference + Error)
-- [ ] `OcapnLean/Model/Equality.lean` — pass-invariant equality predicate
-- [ ] `OcapnLean/Syrup.lean` — encode + decode functions
-- [ ] **Theorem** `Syrup.decode_encode : ∀ v, decode (encode v) = some v`
-- [ ] **Theorem** `Syrup.encode_canonical : ∀ b₁ b₂, decode b₁ = decode b₂ ≠ none → b₁ = b₂` (over the canonical subset)
-- [ ] Property-based tests against `projects/syrup-ocapn/test-data/`
+- [x] `OcapnLean/Model.lean` — algebraic value model
+- [x] `OcapnLean/Syrup.lean` — encode/decode for bool, int, bytes
+- [x] **Theorem** `Syrup.decode_encode : ∀ v, decode (encode v) = some v`
+      — **universal** round-trip proved for the atomic subset
+- [x] `OcapnLean/Syrup/Extended.lean` — encode/decode for strings,
+      symbols, lists, records, dicts (sufficient for CapTP wire frames)
+- [x] `OcapnLean/Syrup/RoundTripExt.lean` — atomic round-trips for
+      `.bool`, `.int (both signs)`, `.bytes`, `.str`, `.sym`, plus empty
+      `.list []` / `.dict []`
+- [x] Cross-impl byte-parity vs the Python reference
+      (13 `native_decide` fixtures: 9 base + 4 extended)
+- [ ] **Deferred:** universal round-trip proof for the container types
+      (`decodeExt_encodeExt : ∀ v : ValueExt`). Strong-induction attempt
+      hit an algebraic obstruction at the singleton-list cons case where
+      `(encL [v]).length = (encodeExt v).length`, so byte-length induction
+      can't supply a strict `< k - 1` IH for the head. Resolution paths:
+      custom well-founded recursion on a combined `(fuel, depth)` measure,
+      OR weaken atomic helpers from `length + 1 ≤ fuel` to `length ≤ fuel`.
+- [ ] **Deferred:** extend codec to floats, doubles, sets.
 
-**Exit criteria:** Lean theorems above are proved; we can read and write
-real Syrup bytes from the upstream test corpus.
-
-## Milestone M2 — One-peer CapTP state machine in Veil _(partially done 2026-05-14)_
+## Milestone M2 — One-peer CapTP state machine in Veil _(largely done 2026-05-15)_
 
 **Done already:**
 - [x] `OcapnLean/Captp/Spec.lean` — Veil module with `exportNew`, `importNew`,
@@ -73,44 +83,33 @@ real Syrup bytes from the upstream test corpus.
   - `deliver_eq_send` — for delivered msgs, deliver-index = send-index
 - [x] 48/48 SMT theorems discharged
 
-## Milestone M4 — GC soundness + crossed-hellos _(2026-07-07)_
+## Milestone M4 — GC soundness + crossed-hellos _(done 2026-05-14)_
 
-- [ ] Distributed refcount invariants for `op:gc-exports`
-- [ ] **P4 (GC soundness)** discharged
-- [ ] **P5 (crossed-hellos determinism)** discharged
-- [ ] Bounded model checks for GC stress scenarios via `sat trace { ... }`
+- [x] Distributed refcount invariants for `op:gc-exports`
+      (`OcapnLean/Captp/Gc.lean`, 18 SMT thms)
+- [x] **P4 (GC soundness)** discharged
+- [x] **P5 (crossed-hellos determinism)** discharged
+      (`OcapnLean/Captp/CrossedHellos.lean`, 12 SMT thms)
+- [ ] **Deferred:** bounded model checks for GC stress scenarios via
+      `sat trace { ... }`
 
-## Milestone M5 — No-forgery (capability safety) _(2026-07-21)_
+## Milestone M5 — No-forgery (capability safety) _(done 2026-05-14)_
 
-- [ ] Define `reachableAuth` as a `ghost relation` capturing the transitive
-      closure of authority-passing events
-- [ ] **P3 (no forgery)** discharged
-- [ ] This is the hardest single-session proof; expect CTI iteration
+- [x] `reachableAuth` ghost relation capturing the transitive closure
+      of authority-passing events
+- [x] **P3 (no forgery)** discharged for the direct-send case
+      (`OcapnLean/Captp/NoForgery.lean`, 8 SMT thms)
+- [ ] **Deferred:** forwarding case (a peer re-exporting an imported
+      reference); same skeleton, additional ghost relation update on
+      `desc:export` of an imported pos
 
-## Milestone M6 — Three-party handoffs _(2026-08-04)_
+## Milestone M6 — Three-party handoffs _(done 2026-05-14)_
 
-- [ ] `OcapnLean/Captp/Threeparty.lean` — three peers, three pairwise sessions
-- [ ] `desc:handoff-give`, `desc:handoff-receive`, gift deposit/withdraw modelled
-- [ ] **P6 (handoff non-replay)** discharged
-- [ ] Cryptographic signatures treated as a trusted black box
+- [x] `OcapnLean/Captp/Threeparty.lean` — three peers, three pairwise
+      sessions, gift deposit/withdraw modelled
+- [x] **P6 (handoff non-replay)** discharged (6 SMT thms)
+- [x] Cryptographic signatures treated as a trusted black box
       (`function validSig : pubkey → bytes → sig → Prop`)
-
-## Milestone M1 — Syrup codec _(largely done 2026-05-14)_
-
-- [x] `OcapnLean/Syrup.lean` — encode/decode for bool, int, bytes
-- [x] `decode_encode` — **universal** round-trip for the atomic subset
-- [x] 16 concrete int/bytes round-trips by `native_decide`
-      (redundant given the universal theorem, kept as documentation)
-- [x] `OcapnLean/Syrup/Extended.lean` — encode/decode for strings,
-      symbols, lists, records (sufficient for CapTP wire frames)
-- [x] Cross-impl byte-parity vs the Python reference (4 new
-      `native_decide` fixtures for sym/str/list/record)
-- [ ] **Deferred:** universal round-trip proof for the container
-      types. Requires structural induction over `ValueExt` (which
-      nests through `List ValueExt`) and a `partial def → def`
-      conversion with a fuel measure or wellfounded recursion.
-      Conceptually straightforward but a chunk of work.
-- [ ] **Deferred:** extend codec to floats, doubles, dicts, sets.
 
 ## Milestone M7 — Executable implementation _(largely done 2026-05-14)_
 
@@ -136,7 +135,7 @@ proof against `Captp.Spec`.
       (promise monotonicity, table functionality). Mechanically
       similar to `bootstrapAtZero_lifts`.
 
-## Milestone M8 — Interop _(largely done 2026-05-14)_
+## Milestone M8 — Interop _(done 2026-05-15)_
 
 - [x] Syrup-layer interop: 13 `native_decide` byte-parity checks
       (9 base + 4 extended) vs Python reference impl
@@ -151,36 +150,29 @@ proof against `Captp.Spec`.
       handshake error paths under real Ed25519 crypto, and the
       Lean-as-client driver (`lake exe client-vs-external`) runs
       a full handshake + bootstrap-fetch + echo round-trip against
-      any OCapN peer. (Earlier placeholder-crypto interop scripts
-      were retired once the server began verifying signatures.)
-- [x] **First ocapn-test-suite test passes against our server:**
-      `tests.op_start_session.OpStartSessionTest.test_captp_remote_version`
-      — `ok` under the upstream `test_runner.py`. This requires the
-      server to: parse the inbound `op:start-session` (containing
-      Syrup dict-shaped hints), reply with a properly-shaped
-      `op:start-session` containing gcrypt-style
-      `(public-key (ecc ...))` and `(sig-val (eddsa ...))`
-      structures, and emit our location as a 3-arg `ocapn-peer`
-      record.
-- [ ] **Deferred:** the remaining `op_start_session` tests
-      (`invalid_version`, `invalid_signature`, the two
-      crossed-hellos tests). Requires:
-      (a) Ed25519 signature verification on our side, plus a real
-          private key for our own signature (currently stubbed
-          to zero bytes — the strict tests reject this);
-      (b) modelling the sturdyref-enlivener bootstrap object so
-          the crossed-hellos tests can induce a return connection.
-- [ ] **Deferred:** the other test modules (`op_deliver`,
-      `op_gc`, `op_listen`, `op_abort`, `third_party_handoffs`).
-      Each adds dispatch surface — promise pipelining, GC
-      refcount tracking, three-party handoff verification, etc.
-- [ ] **Deferred:** wire-level interop with Spritely Goblins /
-      Endo / Ridley's DObjects. Each requires its own runtime:
-      Goblins needs Guile (not installed), Endo a Yarn install of
-      a large monorepo, DObjects a Dart SDK. The Python reference
-      encoder doubling as a non-Lean impl already validates the
-      most important interop guarantee (byte parity at the
-      Syrup layer plus correct CapTP handshake semantics).
+      any OCapN peer
+- [x] **Full ocapn-test-suite passes: 24/24** under the upstream
+      `test_runner.py`, covering all six test modules
+      (`op_start_session` 5/5, `op_deliver` 4/4, `op_abort` 1/1,
+      `op_listen` 3/3, `op_gc` 4/4, `third_party_handoffs` 7/7).
+      Matches the @endo/ocapn TypeScript reference implementation's
+      pass rate against the same suite (also 24/24) — strong
+      independent-impl agreement on the wire format and
+      message-sequencing decisions encoded in `Captp/Session.lean`
+- [x] Cross-impl client-driving verified: Lean client → @endo/ocapn
+      server runs full handshake + bootstrap-fetch + echo
+      round-trip OK
+- [x] **Cross-impl disagreements documented** in
+      [`docs/INTEROP.md`](./INTEROP.md): four numbered disagreements
+      with evidence (Disagreement 1 `ocapn-peer` rename ✅ resolved
+      upstream v0.16.1; D2 list-shaped pubkey/sig ✅ four-way
+      agreement; D3 hints field — we normalised to `.dict []`;
+      D4 Ridley netstring framing vs raw Syrup — Ridley deviates
+      from Python ref, upstream-issue draft pending)
+- [x] Goblins testuds silent-handshake bug reproduced
+      (`scripts/diagnostics/goblins-minimal-vat-probe.scm`) with
+      draft upstream issue at
+      `scripts/diagnostics/UPSTREAM-GOBLINS-ISSUE.md`
 
 ## Milestone M9 — Locator + sturdyref _(opened 2026-05-15)_
 

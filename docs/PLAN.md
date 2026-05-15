@@ -1,7 +1,7 @@
 # `ocapn-lean` — Plan
 
 > **Status:** 7/8 named proofs of behavior mechanically discharged
-> (last updated 2026-05-14). See §5 for the per-proof scoreboard.
+> (last updated 2026-05-15). See §5 for the per-proof scoreboard.
 > **Scope:** a Lean 4 implementation of the OCapN protocol with safety
 > properties of the CapTP layer mechanically proved using
 > [Veil](https://github.com/verse-lab/veil).
@@ -114,7 +114,8 @@ FIFO). For two peers the full module instantiates the above mirror.
 The first three are top priority; the rest are sequenced behind them. Each
 is stated as a `safety` clause plus the supporting `invariant` clauses.
 
-**Scoreboard (2026-05-14, 147 SMT theorems passing):**
+**Scoreboard (2026-05-15, 235 SMT theorems passing — Spec 143, Twoparty 48,
+Gc 18, CrossedHellos 12, NoForgery 8, Threeparty 6):**
 
 | ID | Property | Status | Module |
 | --- | --- | --- | --- |
