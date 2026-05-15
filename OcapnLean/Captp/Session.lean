@@ -124,6 +124,43 @@ def extractStartSessionVersion (v : ValueExt) : Option (List UInt8) :=
       if lbl = opStartSessionSym then some version else none
   | _ => none
 
+/-- Pull the 4 fields out of an `op:start-session` record:
+    `(version, pubkey-record, location, sig-record)`. -/
+def extractStartSession (v : ValueExt) :
+    Option (List UInt8 × ValueExt × ValueExt × ValueExt) :=
+  match v with
+  | .record (.sym lbl) [.str ver, pk, loc, sig] =>
+      if lbl = opStartSessionSym then some (ver, pk, loc, sig) else none
+  | _ => none
+
+/-- Extract the 32-byte EdDSA pubkey `q` from a gcrypt-shaped
+`(public-key (ecc … (q PK)))` record. -/
+def extractPubkey : ValueExt → Option (List UInt8)
+  | .list [_, .list [_, _, _, .list [_, .bytes q]]] => some q
+  | _ => none
+
+/-- Extract the 64-byte signature (`r ++ s`) from a gcrypt-shaped
+`(sig-val (eddsa (r R) (s S)))` record. -/
+def extractSig : ValueExt → Option (List UInt8)
+  | .list [_, .list [_, .list [_, .bytes r], .list [_, .bytes s]]] =>
+      some (r ++ s)
+  | _ => none
+
+/-- Verify that `sig` is a valid Ed25519 signature by `pk` over the
+syrup encoding of `<my-location <loc>>`. Returns `false` if any
+structural extraction fails (mismatched shapes, wrong byte lengths). -/
+def verifyClientLocationSig
+    (pkVal : ValueExt) (loc : ValueExt) (sigVal : ValueExt) : Bool :=
+  match extractPubkey pkVal, extractSig sigVal with
+  | some pkBytes, some sigBytes =>
+      if pkBytes.length = 32 && sigBytes.length = 64 then
+        Crypto.ed25519Verify
+          (listToBa pkBytes)
+          (locationSigningPayload loc)
+          (listToBa sigBytes)
+      else false
+  | _, _ => false
+
 /-- Top-level dispatcher for one frame. -/
 def dispatch (s : State) (registry : Registry) (frame : ValueExt) :
     IO (Option ValueExt) := do
@@ -131,18 +168,22 @@ def dispatch (s : State) (registry : Registry) (frame : ValueExt) :
 
   -- Handshake phase: we expect the first frame to be op:start-session.
   if !(← s.handshakeDone.get) then
-    match extractStartSessionVersion frame with
-    | some version =>
-      if version = captpVersion.toUTF8.toList then
+    match extractStartSession frame with
+    | some (version, clientPk, clientLoc, clientSig) =>
+      if version ≠ captpVersion.toUTF8.toList then
+        s.aborted.set true
+        return some (buildAbort s!"unsupported captp version: {String.fromUTF8! ⟨version.toArray⟩}")
+      else if ¬ verifyClientLocationSig clientPk clientLoc clientSig then
+        IO.eprintln s!"[session] client signature failed verification; aborting"
+        s.aborted.set true
+        return some (buildAbort "invalid acceptable-location signature")
+      else
         s.handshakeDone.set true
         let payload := locationSigningPayload s.ourLocation
         let sig     := Crypto.ed25519Sign s.sessionSecret payload
         let reply   := buildStartSessionReply (baToList s.sessionPubkey) sig s.ourLocation
         IO.eprintln s!"[session] handshake OK, replying with signed op:start-session"
         return some reply
-      else
-        s.aborted.set true
-        return some (buildAbort s!"unsupported captp version: {String.fromUTF8! ⟨version.toArray⟩}")
     | none =>
       IO.eprintln s!"[session] first frame is not op:start-session; aborting"
       s.aborted.set true

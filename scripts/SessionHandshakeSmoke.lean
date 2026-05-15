@@ -25,17 +25,9 @@ the interpreter can find the FFI symbols:
 open OcapnLean Captp Captp.Session Netlayer Syrup Crypto
 open Std.Net
 
-/-- Extract the 32-byte pubkey `q` from a gcrypt-shaped pubkey
-record `(public-key (ecc ... (q PK)))`. -/
-def extractPubkey : ValueExt → Option (List UInt8)
-  | .list [_, .list [_, _, _, .list [_, .bytes q]]] => some q
-  | _ => none
-
-/-- Extract the 64-byte signature from a gcrypt-shaped sig-val
-record `(sig-val (eddsa (r R) (s S)))`. -/
-def extractSig : ValueExt → Option (List UInt8)
-  | .list [_, .list [_, .list [_, .bytes r], .list [_, .bytes s]]] => some (r ++ s)
-  | _ => none
+-- `Session.extractPubkey` and `Session.extractSig` are the canonical
+-- extractors; we used to redeclare them here, but they're now exported
+-- from the Session module.
 
 def main : IO Unit := do
   let port : UInt16 := 22090
@@ -58,15 +50,20 @@ def main : IO Unit := do
 
   IO.sleep 50
 
-  -- Client side: build an op:start-session and send it.
-  let cliFakePk : List UInt8 := List.replicate 32 0x00
-  let cliFakeSig : List UInt8 := List.replicate 64 0x00
+  -- Client side: generate a real per-session keypair, build an
+  -- op:start-session with a valid signature over its own location,
+  -- and send it. The server (which now verifies inbound sigs)
+  -- should accept it.
+  let (cliPk, cliSk) ← ed25519Keypair
   let helloLoc : ValueExt :=
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "tcp-testing-only".toUTF8.toList
       , .str "clientdeadbeefdeadbeefdeadbeefde".toUTF8.toList
       , .list []
       ]
+  let cliPayload := locationSigningPayload helloLoc
+  let cliSigBA := ed25519Sign cliSk cliPayload
+  let cliSig := cliSigBA.toList
   let hello : ValueExt :=
     .record (.sym "op:start-session".toUTF8.toList)
       [ .str "1.0".toUTF8.toList
@@ -74,12 +71,12 @@ def main : IO Unit := do
                .list [.sym "ecc".toUTF8.toList,
                       .list [.sym "curve".toUTF8.toList, .sym "Ed25519".toUTF8.toList],
                       .list [.sym "flags".toUTF8.toList, .sym "eddsa".toUTF8.toList],
-                      .list [.sym "q".toUTF8.toList, .bytes cliFakePk]]]
+                      .list [.sym "q".toUTF8.toList, .bytes cliPk.toList]]]
       , helloLoc
       , .list [.sym "sig-val".toUTF8.toList,
                .list [.sym "eddsa".toUTF8.toList,
-                      .list [.sym "r".toUTF8.toList, .bytes (cliFakeSig.take 32)],
-                      .list [.sym "s".toUTF8.toList, .bytes (cliFakeSig.drop 32)]]]
+                      .list [.sym "r".toUTF8.toList, .bytes (cliSig.take 32)],
+                      .list [.sym "s".toUTF8.toList, .bytes (cliSig.drop 32)]]]
       ]
 
   let net ← Tcp.connect addr

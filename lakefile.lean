@@ -30,21 +30,6 @@ input_file cryptoShimSrc where
   path := "c" / "crypto.c"
   text := true
 
-/-- Build `c/crypto.c` to an `.o` linked into the Crypto FFI lib. -/
-target cryptoShim pkg : FilePath := do
-  let oFile := pkg.buildDir / "c" / "crypto.o"
-  let srcJob ← cryptoShimSrc.fetch
-  let incDir ← libsodium.includeDir
-  let flags := #[
-    "-std=c11",
-    "-fPIC",
-    "-O2",
-    "-Wall",
-    "-I", (← getLeanIncludeDir).toString,
-    "-I", incDir
-  ]
-  buildO oFile srcJob flags
-
 /-- libsodium link args, used wherever the FFI shim is pulled in.
 
 The `--allow-shlib-undefined` is needed because libsodium references
@@ -58,16 +43,30 @@ def sodiumLinkArgs : Array String := #[
   "-Wl,--allow-shlib-undefined"
 ]
 
-/-- FFI-only lib. Precompiled so the `.o` is linked into a shared
-object that both the executable and the interpreter can dlopen.
-Isolated from the rest of `OcapnLean.*` to keep the precompile cost
-small (only this single module is native-compiled). -/
+/-- Build the C shim into a static archive (`libocapnLeanShim.a`).
+This is what executables and other static consumers link against. -/
+extern_lib libocapnLeanShim pkg := do
+  let oFile := pkg.buildDir / "c" / "crypto.o"
+  let aFile := pkg.staticLibDir / nameToStaticLib "ocapnLeanShim"
+  let srcJob ← cryptoShimSrc.fetch
+  let incDir ← libsodium.includeDir
+  let flags := #[
+    "-std=c11",
+    "-fPIC",
+    "-O2",
+    "-Wall",
+    "-I", (← getLeanIncludeDir).toString,
+    "-I", incDir
+  ]
+  let oJob ← buildO oFile srcJob flags
+  buildStaticLib aFile #[oJob]
+
+/-- FFI-only lib. -/
 @[default_target]
 lean_lib OcapnLeanCrypto where
   srcDir := "."
   roots := #[`OcapnLean.Crypto]
   precompileModules := true
-  moreLinkObjs := #[cryptoShim]
   moreLinkArgs := sodiumLinkArgs
 
 /-- Main library — every `OcapnLean.*` module except `Crypto`,
@@ -98,17 +97,31 @@ lean_lib OcapnLean where
     `OcapnLean.Test.Interop
   ]
 
-/-- Path the cryptoShim target writes its .o to. Lake doesn't surface a
-nicer accessor here, so we hardcode it; the value matches the target
-defined above. -/
-def cryptoShimOPath : String :=
-  ".lake/build/c/crypto.o"
-
-/-- `lean_exe` doesn't have a `moreLinkObjs` field, but plain object
-paths in `moreLinkArgs` are accepted by the linker — so we slip
-crypto.o in that way. -/
+/-- The executable doesn't need to mention the shim explicitly — the
+`extern_lib libocapnLeanShim` above is auto-linked into anything that
+transitively imports `OcapnLean.Crypto` (here, via `OcapnLean.Server →
+… → OcapnLean.Captp.Session → OcapnLean.Crypto`). We only need to
+pass through the libsodium link args. -/
 @[default_target]
 lean_exe «ocapn-server» where
   root := `OcapnLean.Server
-  needs := #[cryptoShim]
-  moreLinkArgs := #[cryptoShimOPath] ++ sodiumLinkArgs
+  moreLinkArgs := sodiumLinkArgs
+
+/-! ## Smoke tests packaged as executables
+
+Lake's per-module dynlibs don't pick up the extern_lib on Linux
+(`linkDeps := Platform.isWindows` in `buildLeanSharedLib`), which
+means `lake env lean --run scripts/foo.lean` can't resolve our
+`@[extern]` symbols. Wrapping the smoke scripts as `lean_exe`
+targets bypasses that — the extern_lib is statically linked into
+the executable at build time. Run with `lake exe <name>`. -/
+
+lean_exe «crypto-smoke» where
+  root := `scripts.CryptoSmoke
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs
+
+lean_exe «session-handshake-smoke» where
+  root := `scripts.SessionHandshakeSmoke
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs

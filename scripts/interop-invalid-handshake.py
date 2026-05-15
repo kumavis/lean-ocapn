@@ -67,40 +67,80 @@ def send_recv(payload: bytes, expect_prefix: bytes, label: str) -> bool:
         return False
 
 
-def main() -> int:
-    pubkey = b"\x00" * 32
-    location = Record(Symbol("my-location"),
-                      [Record(Symbol("ocapn-peer"),
-                              [Symbol("tcp-testing-only"),
-                               "client",
-                               []])])
-    sig = b"\x00" * 64
+def gcrypt_pubkey(pk_bytes: bytes) -> list:
+    return [Symbol("public-key"),
+            [Symbol("ecc"),
+             [Symbol("curve"), Symbol("Ed25519")],
+             [Symbol("flags"), Symbol("eddsa")],
+             [Symbol("q"), pk_bytes]]]
 
-    # --- test 1: valid version, expect op:start-session reply ---
+
+def gcrypt_sig(sig_64: bytes) -> list:
+    return [Symbol("sig-val"),
+            [Symbol("eddsa"),
+             [Symbol("r"), sig_64[:32]],
+             [Symbol("s"), sig_64[32:]]]]
+
+
+def main() -> int:
+    # --- Build a real Ed25519 keypair and a real signature over the
+    # syrup encoding of `<my-location <ocapn-peer …>>`. ---
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 \
+            import Ed25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        print("cryptography is required (pip install cryptography)")
+        return 2
+
+    location_record = Record(Symbol("ocapn-peer"),
+                             [Symbol("tcp-testing-only"),
+                              "client",
+                              []])
+    signed_payload = syrup.syrup_encode(
+        Record(Symbol("my-location"), [location_record]))
+
+    priv = Ed25519PrivateKey.generate()
+    pk_bytes = priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw)
+    good_sig = priv.sign(signed_payload)
+    pk = gcrypt_pubkey(pk_bytes)
     good = Record(Symbol("op:start-session"),
-                  ["1.0", pubkey, location, sig])
+                  ["1.0", pk, location_record, gcrypt_sig(good_sig)])
+
+    # --- test 1: valid handshake → op:start-session reply ---
     ok1 = send_recv(syrup.syrup_encode(good),
                     b"<16'op:start-session3\"1.0",
-                    "test_captp_remote_version (valid 1.0)")
+                    "test_captp_remote_version (valid 1.0, real sig)")
 
     # --- test 2: invalid version → op:abort ---
     bad_ver = Record(Symbol("op:start-session"),
-                     ["wrong-version", pubkey, location, sig])
+                     ["wrong-version", pk, location_record, gcrypt_sig(good_sig)])
     ok2 = send_recv(syrup.syrup_encode(bad_ver),
                     b"<8'op:abort",
                     "test_start_session_with_invalid_version")
 
-    # --- test 3: non-handshake first frame → op:abort ---
+    # --- test 3: invalid signature → op:abort ---
+    # Sign a *different* payload, so the server's verify fails.
+    bad_sig = priv.sign(b"a different payload")
+    bad_sig_op = Record(Symbol("op:start-session"),
+                        ["1.0", pk, location_record, gcrypt_sig(bad_sig)])
+    ok3 = send_recv(syrup.syrup_encode(bad_sig_op),
+                    b"<8'op:abort",
+                    "test_start_session_with_invalid_signature")
+
+    # --- test 4: non-handshake first frame → op:abort ---
     not_handshake = Record(Symbol("op:deliver"),
                            [Record(Symbol("desc:export"), [0]),
                             [], 0, False])
-    ok3 = send_recv(syrup.syrup_encode(not_handshake),
+    ok4 = send_recv(syrup.syrup_encode(not_handshake),
                     b"<8'op:abort",
                     "first frame is not op:start-session")
 
     print()
-    print(f"Results: {sum([ok1, ok2, ok3])}/3 passed")
-    return 0 if (ok1 and ok2 and ok3) else 1
+    print(f"Results: {sum([ok1, ok2, ok3, ok4])}/4 passed")
+    return 0 if (ok1 and ok2 and ok3 and ok4) else 1
 
 
 if __name__ == "__main__":
