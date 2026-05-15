@@ -46,7 +46,7 @@ def main : IO Unit := do
   let _serverTask ← IO.asTask (prio := .dedicated) do
     let net ← acceptOne
     let conn ← FramedConn.of net
-    Session.run conn Bootstrap.defaultRegistry serverLoc
+    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc
 
   IO.sleep 50
 

@@ -125,3 +125,8 @@ lean_exe «session-handshake-smoke» where
   root := `scripts.SessionHandshakeSmoke
   srcDir := "."
   moreLinkArgs := sodiumLinkArgs
+
+lean_exe «enlivener-smoke» where
+  root := `scripts.EnlivenerSmoke
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs
