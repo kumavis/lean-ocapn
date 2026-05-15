@@ -82,7 +82,7 @@ because both implementations conform to the spec the same way. The
 disagreements are documented here as evidence for the upstream
 ecosystem rather than worked around in our codebase.
 
-### Disagreement 1 — Peer-location label: `<ocapn-peer …>` vs `<ocapn-node …>`
+### Disagreement 1 — Peer-location label: `<ocapn-peer …>` vs `<ocapn-node …>` ✅ resolved upstream
 
 The spec defines the peer-location record as `<ocapn-peer transport
 designator hints>` (`projects/ocapn-spec/draft-specifications/Locators.md`
@@ -94,26 +94,15 @@ lines 58–65):
             hints>      ; struct | false
 ```
 
-Goblins emits and expects `<ocapn-node …>` instead. See
-`projects/goblins/goblins/ocapn/ids.scm` lines 53, 58:
-
-```
-;;   <ocapn-node $transport $transport-designator $transport-hints>
-
-(define-syrup-record-type <ocapn-node>
-  (make-ocapn-node transport designator hints)
-  ocapn-node?
-  ocapn-node marshall::ocapn-node unmarshall::ocapn-node
-  (transport ocapn-node-transport)
-  (designator ocapn-node-designator)
-  (hints ocapn-node-hints))
-```
-
-Goblins's unmarshaller dispatch (`projects/goblins/goblins/contrib/syrup.scm`
-lines 396–411) matches records by symbol label; a `<ocapn-peer …>`
-arriving on the wire finds no unmarshaller and is delivered to
-captp as a raw `<tagged>` value, which then fails to satisfy any
-downstream `ocapn-node?` predicate.
+**Status.** Originally identified as a Goblins-side deviation
+(Goblins's older `<ocapn-node …>`). The rename to `<ocapn-peer …>`
+was landed upstream on
+[codeberg.org/spritely/goblins](https://codeberg.org/spritely/goblins)
+no later than the `v0.16.1` release. Our submodule pin now tracks
+`v0.17.0`
+(`projects/goblins/goblins/ocapn/ids.scm` line 77 –
+`(define-syrup-record-type <ocapn-peer> …)`),
+which matches the other four implementations and the spec:
 
 | Impl | Label emitted | Conforms to spec |
 |---|---|---|
@@ -121,16 +110,12 @@ downstream `ocapn-node?` predicate.
 | @endo/ocapn (`projects/endo/packages/ocapn/src/codecs/components.js`) | `ocapn-peer` | ✅ |
 | Ridley dobjects (`projects/ridley-dobjects/lib/src/locators/peer_locator.dart:136`) | `ocapn-peer` | ✅ |
 | Python ref suite (`projects/ocapn-test-suite/contrib/syrup.py`, exercised by `tests/op_start_session.py`) | `ocapn-peer` | ✅ |
-| Spritely Goblins | `ocapn-node` | ❌ |
+| Spritely Goblins ≥ v0.16.1 (`projects/goblins/goblins/ocapn/ids.scm:77`) | `ocapn-peer` (`<ocapn-node>` kept as deprecated alias at line 54) | ✅ |
 
-**Assessment.** Goblins deviates from the published draft spec; the
-other four implementations agree on `ocapn-peer`. This appears to
-be a historical naming carryover — the spec's
-[Locators.md history](https://github.com/ocapn/ocapn) likely shows
-the rename. A fix would be a one-line change to Goblins's
-`define-syrup-record-type` (rename the macro form *and* update the
-exported label symbol) plus updating its accessor names; behaviour
-otherwise unchanged.
+The five-way agreement on this label means the original Disagreement 1
+report (against gitlab's older `guile-goblins`, pinned to commit
+`e15b86f`) no longer applies. Documented here as a record of what was
+investigated and why; not actionable in the current codebase.
 
 ### Disagreement 2 — Cryptographic structure shape: record vs. list
 
@@ -215,37 +200,40 @@ nix-shell -p guile guile-goblins guile-fibers --command \
 ```
 
 The Lean side `lake exe client-vs-uds -- --sock <path> --version
-goblins-0.16` connects and sends an `op:start-session`. Goblins's
-unmarshaller successfully parses the outer record (label matches
-`op:start-session`), but the third argument is our spec-correct
-`<ocapn-peer …>`, which Goblins doesn't recognise (it expects
-`<ocapn-node …>`). The handshake stalls because Goblins delivers a
-raw `<tagged>` to captp instead of a real `<ocapn-node>` object.
+goblins-0.16` connects and sends an `op:start-session`.
 
-Workarounds we considered but did *not* adopt:
-
-  * Emit `<ocapn-node …>` from our side when talking to Goblins.
-    Rejected — would bake an upstream-implementation-specific shim
-    into the spec-conforming codec.
-  * Wrap our `<ocapn-peer …>` and `<ocapn-node …>` so both pass
-    everywhere. Rejected — duplicates each wire frame; pollutes the
-    refinement spec.
-
-**Proper fix is on the Goblins side.** Filed as a follow-up; see
-the "Upstream follow-ups" section below.
+**Status (2026-05-15).** With the submodule pin bumped to
+`v0.17.0` (which has the `ocapn-peer` rename), Goblins's
+unmarshaller now matches our `<ocapn-peer …>` outright — the
+specific deviation that Disagreement 1 documented is gone. The
+handshake nevertheless still stalls; a Python probe sent a
+spec-correct, real-signed `op:start-session` over the UDS socket
+and received **zero bytes** in reply (Goblins didn't even send its
+own first `op:start-session`). Goblins doesn't crash or print
+errors; it's just silent. Likely a different bug — possibly in our
+`scripts/goblins-testuds-server.scm` wiring of `spawn-mycapn` and
+the netlayer setup, or in Goblins's `^connection-establisher` path
+when driven by a non-Goblins peer. Filed as a follow-up; needs
+patient tracing on the Goblins side with `format`-style diagnostics
+inside the captp setup actor.
 
 ## Upstream follow-ups (drafts)
 
-The following are sketches of issues to file at the relevant
-upstream projects. We don't carry compatibility shims for either —
-our codec stays spec-conformant.
+The following are sketches of issues we'd file at the relevant
+upstream projects. We don't carry compatibility shims — our codec
+stays spec-conformant.
 
-* **`codeberg.org/spritely/goblins`** — handshake label rename:
-  current `<ocapn-node …>` should be `<ocapn-peer …>` per
-  `ocapn-spec/draft-specifications/Locators.md` lines 58–65, which
-  the other four implementations follow. Mechanical refactor:
-  rename the `define-syrup-record-type` form and update accessor
-  names in `goblins/ocapn/ids.scm`; nothing else changes.
+* **`codeberg.org/spritely/goblins`** — `testuds` peer doesn't reply
+  to inbound `op:start-session`. Reproducer:
+  `scripts/goblins-testuds-server.scm` in this repo (a minimal
+  testuds peer registering the standard test-suite swissnums); a
+  Python probe sending a real-signed `op:start-session` over the
+  UDS socket sees zero reply bytes within 3s. Goblins doesn't crash.
+  Suspect setup-order bug in `^connection-establisher` /
+  `new-connection` path when the inbound peer isn't another Goblins
+  instance. Note: `v0.16.1`'s `ocapn-peer` rename is already in
+  place, so this is *not* the same as the historical naming
+  disagreement (which is closed).
 
 * **`ocapn/ocapn-spec`** — clarification ticket: the spec text uses
   `[…]` (list) notation for pubkey/sig and `<…>` (record) notation
