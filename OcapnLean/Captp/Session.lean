@@ -58,6 +58,8 @@ def opStartSessionSym  : List UInt8 := "op:start-session".toUTF8.toList
 def opDeliverSym       : List UInt8 := "op:deliver".toUTF8.toList
 def opAbortSym         : List UInt8 := "op:abort".toUTF8.toList
 def opListenSym        : List UInt8 := "op:listen".toUTF8.toList
+def opGcExportsSym     : List UInt8 := "op:gc-exports".toUTF8.toList
+def opGcAnswersSym     : List UInt8 := "op:gc-answers".toUTF8.toList
 def descExportSym      : List UInt8 := "desc:export".toUTF8.toList
 def descAnswerSym      : List UInt8 := "desc:answer".toUTF8.toList
 def descImportObjSym   : List UInt8 := "desc:import-object".toUTF8.toList
@@ -180,6 +182,61 @@ def buildBreakValue (toPos : Nat) (r : ValueExt) : ValueExt :=
     , .bool false
     , .bool false
     ]
+
+/-- Build `<op:gc-exports [pos…] [delta…]>` informing the peer they
+may decrement the wire count of the listed export positions. -/
+def buildGcExports (positions : List Nat) (deltas : List Nat) : ValueExt :=
+  .record (.sym opGcExportsSym)
+    [ .list (positions.map fun n => .int (Int.ofNat n))
+    , .list (deltas.map    fun n => .int (Int.ofNat n))
+    ]
+
+/-- Build `<op:gc-answers [pos…]>` informing the peer they may
+release the listed answer positions. -/
+def buildGcAnswers (positions : List Nat) : ValueExt :=
+  .record (.sym opGcAnswersSym)
+    [ .list (positions.map fun n => .int (Int.ofNat n)) ]
+
+/-! ## Reference scanning for GC.
+
+When an inbound `op:deliver`'s args reference one of *the peer's*
+exports (a `<desc:import-object N>` from our point of view), each
+occurrence increments our wire-count for `N`. We don't retain those
+references past the call, so after the dispatch we emit an
+`op:gc-exports` that releases them all. -/
+
+/-- Walk a `ValueExt` and collect every `<desc:import-object N>`
+position it contains, occurrence-by-occurrence (i.e., duplicates
+preserved). -/
+partial def collectImportObjPositions : ValueExt → List Nat
+  | .record (.sym lbl) [.int n] =>
+      if lbl = descImportObjSym && n ≥ 0 then [n.toNat] else []
+  | .record _ fs => fs.flatMap collectImportObjPositions
+  | .list xs     => xs.flatMap collectImportObjPositions
+  | .dict xs     => xs.flatMap collectImportObjPositions
+  | _            => []
+
+/-- Tally occurrences. Returns `(positions, deltas)` in stable
+encounter order so the wire frame is deterministic. -/
+def tallyPositions (xs : List Nat) : List Nat × List Nat :=
+  let rec go : List Nat → List (Nat × Nat) → List (Nat × Nat)
+    | [], acc       => acc
+    | n :: rest, acc =>
+        if acc.any (·.1 = n) then
+          go rest (acc.map (fun (p, c) => if p = n then (p, c + 1) else (p, c)))
+        else
+          go rest (acc ++ [(n, 1)])
+  let tallied := go xs []
+  (tallied.map (·.1), tallied.map (·.2))
+
+/-- If `args` contained any `<desc:import-object …>` references,
+produce the single `op:gc-exports` frame that releases them. -/
+def gcExportsFor (args : List ValueExt) : Option ValueExt :=
+  match (args.flatMap collectImportObjPositions) with
+  | []  => none
+  | ns  =>
+    let (poss, dels) := tallyPositions ns
+    some (buildGcExports poss dels)
 
 /-! ## Outbound session registry.
 
@@ -331,6 +388,10 @@ structure State where
   current state. Pipelined `<desc:answer N>` recipients dispatch
   through this. -/
   answers       : IO.Ref (List (Nat × AnswerState))
+  /-- Monotonic counter for *our* outbound `answer-position` slots.
+  Each time we send an `op:deliver` to the peer expecting a reply,
+  we burn one of these and later GC it via `op:gc-answers`. -/
+  nextOutgoingAnswer : IO.Ref Nat
 
 namespace State
 
@@ -344,9 +405,10 @@ def create (ourLocation : ValueExt) (registry : Registry)
   let (pk, sk)      ← Crypto.ed25519Keypair
   let exports       ← IO.mkRef (#[] : Array Export)
   let answers       ← IO.mkRef ([] : List (Nat × AnswerState))
+  let nextOutgoingAnswer ← IO.mkRef 1
   pure { handshakeDone, aborted, ourLocation,
          sessionPubkey := pk, sessionSecret := sk,
-         registry, exports, outboundReg, answers }
+         registry, exports, outboundReg, answers, nextOutgoingAnswer }
 
 /-- Bind an actor handler at a fresh export position. -/
 def exportAllocateActor (st : State) (h : SessionHandler) : IO Nat := do
@@ -688,16 +750,38 @@ def mkEnlivenerHandler (st : State) : SessionHandler := fun args _rmd _ap => do
     IO.eprintln s!"[session][enlivener] expected 1 arg, got {args.length}"
     return []
 
+/-- A "fulfill receiver": an exported actor we bind for the
+`resolve-me-desc` of one of our outbound `op:deliver` calls. When
+the peer ultimately fulfills (or breaks) the call, this handler
+fires once and emits an `op:gc-answers` for the corresponding
+outbound answer position. -/
+def mkFulfillReceiver (outgoingAnswerPos : Nat) : SessionHandler :=
+  fun _args _rmd _ap => do
+    return [buildGcAnswers [outgoingAnswerPos]]
+
 /-- The greeter handler. Spec contract: the caller passes one
 argument — a reference to an object they want greeted — and the
-greeter delivers the literal string `"Hello"` to it. The call has no
-`resolve-me-desc`, only the callback in `args`. -/
-def greeterHandler : SessionHandler := fun args _rmd _ap => do
+greeter delivers the literal string `"Hello"` to it.
+
+To exercise `op:gc-answers` we make the outbound `op:deliver` carry
+a fresh `answer-position` plus a `resolve-me-desc` bound to a
+fulfill-receiver export; when the peer replies, the receiver emits
+the corresponding `op:gc-answers`. -/
+def mkGreeterHandler (st : State) : SessionHandler := fun args _rmd _ap => do
   match args with
   | [cb] =>
     match extractImportObjPos cb with
     | some n =>
-      return [buildDeliverOnly n [.str "Hello".toUTF8.toList]]
+      let ansPos ← st.nextOutgoingAnswer.modifyGet fun k => (k, k + 1)
+      let recvPos ← st.exportAllocateActor (mkFulfillReceiver ansPos)
+      let frame : ValueExt :=
+        .record (.sym opDeliverSym)
+          [ buildDescExport n
+          , .list [.str "Hello".toUTF8.toList]
+          , .int (Int.ofNat ansPos)
+          , buildDescImportObj recvPos
+          ]
+      return [frame]
     | none =>
       IO.eprintln s!"[session][greeter] arg is not a <desc:import-object …>: {repr cb}"
       return []
@@ -840,7 +924,7 @@ def resolveSwissnum (st : State) (swiss : Swissnum) : Option SessionHandler :=
   if swiss = sturdyrefEnlivenerSwiss then
     some (mkEnlivenerHandler st)
   else if swiss = greeterSwiss then
-    some greeterHandler
+    some (mkGreeterHandler st)
   else if swiss = promiseResolverSwiss then
     some (mkPromiseResolverHandler st)
   else if swiss = carFactoryBuilderSwiss then
@@ -858,8 +942,76 @@ def parseOpListen (v : ValueExt) :
 
 /-! ## Top-level frame dispatcher. -/
 
+/-- Run the core dispatch for an `op:deliver` (without the trailing
+`op:gc-exports`). Factored so we can append the GC frame
+unconditionally in the wrapper. -/
+def dispatchOpDeliverCore (st : State) (toVal : ValueExt) (args : List ValueExt)
+    (answerPos : Option Nat) (rmd : ValueExt) : IO (List ValueExt) := do
+  match extractAnswerPos toVal with
+  | some n =>
+    -- Pipelined: look up the answer's resolution.
+    match ← st.answersLookup n with
+    | .resolved exportPos =>
+      match ← st.exportLookup exportPos with
+      | some (.actor h) => h args rmd answerPos
+      | _ =>
+        IO.eprintln s!"[session] pipelined op:deliver to export {exportPos} which is not an actor"
+        return []
+    | .broken r =>
+      match answerPos with
+      | some ap => st.answersResolve ap (.broken r)
+      | none => pure ()
+      match extractImportObjPos rmd with
+      | some rmPos => return [buildBreakValue rmPos r]
+      | none       => return []
+    | .pending =>
+      IO.eprintln s!"[session] op:deliver to pending <desc:answer {n}> — should not happen with TCP ordering"
+      return []
+  | none =>
+  match extractExportPos toVal with
+  | none =>
+    IO.eprintln "[session] op:deliver to non-<desc:export …>; ignoring"
+    return []
+  | some 0 =>
+    -- Bootstrap object: only `fetch` is supported.
+    match args with
+    | [.sym method, .bytes swiss] =>
+      if method ≠ fetchSym then
+        IO.eprintln s!"[session] bootstrap method {String.fromUTF8! ⟨method.toArray⟩} not supported"
+        return []
+      match resolveSwissnum st swiss with
+      | none =>
+        IO.eprintln "[session] fetch: unknown swissnum"
+        return []
+      | some h =>
+        let newPos ← st.exportAllocateActor h
+        match answerPos with
+        | some ap => st.answersResolve ap (.resolved newPos)
+        | none => pure ()
+        match extractImportObjPos rmd with
+        | none =>
+          IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
+          return []
+        | some rmPos =>
+          IO.eprintln s!"[session] fetch resolved → export pos {newPos}, fulfilling rm={rmPos}"
+          return [buildFulfillDeliver rmPos newPos]
+    | _ =>
+      IO.eprintln "[session] bootstrap call with unsupported args shape"
+      return []
+  | some n =>
+    match ← st.exportLookup n with
+    | none =>
+      IO.eprintln s!"[session] op:deliver to unknown export position {n}"
+      return []
+    | some (.actor h) => h args rmd answerPos
+    | some (.promise _) =>
+      IO.eprintln s!"[session] op:deliver to promise position {n} (pipelining via desc:export unsupported)"
+      return []
+
 /-- Handle an incoming `op:deliver` after the handshake completes.
-Returns the frames to emit (possibly empty). -/
+After core dispatch, append an `op:gc-exports` for every
+`<desc:import-object …>` we saw in the args (one wire-delta per
+occurrence) — we don't retain those refs past the call. -/
 def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
   match parseOpDeliver frame with
   | none =>
@@ -867,72 +1019,10 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
     return []
   | some (toVal, args, apVal, rmd) =>
     let answerPos := extractMaybeAnswerNat apVal
-    -- Recipient may be a `<desc:export N>` (direct call) or a
-    -- `<desc:answer N>` (pipelined call). Try answer first.
-    match extractAnswerPos toVal with
-    | some n =>
-      -- Pipelined: look up the answer's resolution.
-      match ← st.answersLookup n with
-      | .resolved exportPos =>
-        match ← st.exportLookup exportPos with
-        | some (.actor h) => do
-          let frames ← h args rmd answerPos
-          return frames
-        | _ =>
-          IO.eprintln s!"[session] pipelined op:deliver to export {exportPos} which is not an actor"
-          return []
-      | .broken r =>
-        -- Auto-propagate the break: record this answer as broken too,
-        -- and reply to rmd (if any) with a break notification.
-        match answerPos with
-        | some ap => st.answersResolve ap (.broken r)
-        | none => pure ()
-        match extractImportObjPos rmd with
-        | some rmPos => return [buildBreakValue rmPos r]
-        | none       => return []
-      | .pending =>
-        IO.eprintln s!"[session] op:deliver to pending <desc:answer {n}> — should not happen with TCP ordering"
-        return []
-    | none =>
-    match extractExportPos toVal with
-    | none =>
-      IO.eprintln "[session] op:deliver to non-<desc:export …>; ignoring"
-      return []
-    | some 0 =>
-      -- Bootstrap object: only `fetch` is supported.
-      match args with
-      | [.sym method, .bytes swiss] =>
-        if method ≠ fetchSym then
-          IO.eprintln s!"[session] bootstrap method {String.fromUTF8! ⟨method.toArray⟩} not supported"
-          return []
-        match resolveSwissnum st swiss with
-        | none =>
-          IO.eprintln "[session] fetch: unknown swissnum"
-          return []
-        | some h =>
-          let newPos ← st.exportAllocateActor h
-          match answerPos with
-          | some ap => st.answersResolve ap (.resolved newPos)
-          | none => pure ()
-          match extractImportObjPos rmd with
-          | none =>
-            IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
-            return []
-          | some rmPos =>
-            IO.eprintln s!"[session] fetch resolved → export pos {newPos}, fulfilling rm={rmPos}"
-            return [buildFulfillDeliver rmPos newPos]
-      | _ =>
-        IO.eprintln "[session] bootstrap call with unsupported args shape"
-        return []
-    | some n =>
-      match ← st.exportLookup n with
-      | none =>
-        IO.eprintln s!"[session] op:deliver to unknown export position {n}"
-        return []
-      | some (.actor h) => h args rmd answerPos
-      | some (.promise _) =>
-        IO.eprintln s!"[session] op:deliver to promise position {n} (pipelining via desc:export unsupported)"
-        return []
+    let frames ← dispatchOpDeliverCore st toVal args answerPos rmd
+    match gcExportsFor args with
+    | some gc => return frames ++ [gc]
+    | none    => return frames
 
 /-- Handle an incoming `op:listen` after the handshake completes.
 Registers the caller as a listener on the targeted promise, or — if
