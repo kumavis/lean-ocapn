@@ -69,9 +69,12 @@ def echoGc : Handler := fun args => pure (.list args)
 to it via another `op:deliver`); for now, just return unit-ish. -/
 def greeter : Handler := fun _ => pure (.bool true)
 
-/-- Render a `Car` value as the string the test expects. -/
+/-- Render a `Car` value as the string the test expects. The wording
+matches Goblins's `^car` (`scripts/goblins-testuds-server.scm`) and
+the upstream Python test assertion (`tests/op_deliver.py`):
+`"Vroom! I am a {color} {model} car!"`. -/
 def renderCar (color model : List UInt8) : ValueExt :=
-  let s := "Vroom! I'm a ".toUTF8.toList ++ color ++ " ".toUTF8.toList
+  let s := "Vroom! I am a ".toUTF8.toList ++ color ++ " ".toUTF8.toList
            ++ model ++ " car!".toUTF8.toList
   .str s
 
