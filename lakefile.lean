@@ -136,6 +136,7 @@ lean_lib OcapnLean where
     `OcapnLean.Netlayer.Uds,
     `OcapnLean.Syrup.Extended,
     `OcapnLean.Syrup.RoundTripExt,
+    `OcapnLean.Locators,
     `OcapnLean.Captp.Messages,
     `OcapnLean.Captp.Spec,
     `OcapnLean.Captp.Twoparty,

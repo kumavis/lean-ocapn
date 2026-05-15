@@ -25,4 +25,5 @@ import OcapnLean.Netlayer.Uds
 import OcapnLean.Server
 import OcapnLean.Syrup.Extended
 import OcapnLean.Syrup.RoundTripExt
+import OcapnLean.Locators
 import OcapnLean.Test.Interop
