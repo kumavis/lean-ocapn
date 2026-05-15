@@ -54,17 +54,20 @@ open Std.Net
 /-- The captp-version this implementation speaks. -/
 def captpVersion : String := "1.0"
 
-def opStartSessionSym : List UInt8 := "op:start-session".toUTF8.toList
-def opDeliverSym      : List UInt8 := "op:deliver".toUTF8.toList
-def opAbortSym        : List UInt8 := "op:abort".toUTF8.toList
-def descExportSym     : List UInt8 := "desc:export".toUTF8.toList
-def descImportObjSym  : List UInt8 := "desc:import-object".toUTF8.toList
-def myLocationSym     : List UInt8 := "my-location".toUTF8.toList
-def fetchSym          : List UInt8 := "fetch".toUTF8.toList
-def fulfillSym        : List UInt8 := "fulfill".toUTF8.toList
-def sturdyrefSym      : List UInt8 := "ocapn-sturdyref".toUTF8.toList
-def peerSym           : List UInt8 := "ocapn-peer".toUTF8.toList
-def tcpTestingOnlySym : List UInt8 := "tcp-testing-only".toUTF8.toList
+def opStartSessionSym  : List UInt8 := "op:start-session".toUTF8.toList
+def opDeliverSym       : List UInt8 := "op:deliver".toUTF8.toList
+def opAbortSym         : List UInt8 := "op:abort".toUTF8.toList
+def opListenSym        : List UInt8 := "op:listen".toUTF8.toList
+def descExportSym      : List UInt8 := "desc:export".toUTF8.toList
+def descImportObjSym   : List UInt8 := "desc:import-object".toUTF8.toList
+def descImportPromiseSym : List UInt8 := "desc:import-promise".toUTF8.toList
+def myLocationSym      : List UInt8 := "my-location".toUTF8.toList
+def fetchSym           : List UInt8 := "fetch".toUTF8.toList
+def fulfillSym         : List UInt8 := "fulfill".toUTF8.toList
+def breakSym           : List UInt8 := "break".toUTF8.toList
+def sturdyrefSym       : List UInt8 := "ocapn-sturdyref".toUTF8.toList
+def peerSym            : List UInt8 := "ocapn-peer".toUTF8.toList
+def tcpTestingOnlySym  : List UInt8 := "tcp-testing-only".toUTF8.toList
 
 /-- Convert a `ByteArray` to `List UInt8` for use in `ValueExt.bytes`. -/
 @[inline] def baToList (ba : ByteArray) : List UInt8 := ba.toList
@@ -130,6 +133,10 @@ def buildDescExport (pos : Nat) : ValueExt :=
 /-- `<desc:import-object N>`. -/
 def buildDescImportObj (pos : Nat) : ValueExt :=
   .record (.sym descImportObjSym) [.int (Int.ofNat pos)]
+
+/-- `<desc:import-promise N>`. -/
+def buildDescImportPromise (pos : Nat) : ValueExt :=
+  .record (.sym descImportPromiseSym) [.int (Int.ofNat pos)]
 
 /-- Build `<op:deliver <desc:export to> [fulfill <desc:import-object new>] False False>`. -/
 def buildFulfillDeliver (toPos : Nat) (newImportPos : Nat) : ValueExt :=
@@ -230,6 +237,38 @@ Common shapes a handler emits:
 
 abbrev SessionHandler := List ValueExt → ValueExt → IO (List ValueExt)
 
+/-! ## Promise machinery.
+
+A promise lives in the same numbering space as an exported actor (so
+the client can refer to it via `<desc:export N>`), but its semantics
+are different: `op:listen` registers a notification target, and a
+`resolver` actor flips it from pending to either fulfilled or broken.
+
+The simplest representation that covers `op_listen`'s three tests:
+
+  * `pending` — list of resolve-me-desc positions awaiting notification
+  * `fulfilled v` — promise resolved to a value, future listens fire
+                    immediately
+  * `broken r` — promise broken with reason r, same idea
+
+When the resolver actor flips the state, we drain the listener list
+and emit a `<op:deliver <desc:export Lᵢ> [fulfill v] False False>`
+(or `[break r]`) on the same connection for each. -/
+
+inductive PromiseState
+  | pending  (listeners : List Nat)
+  | fulfilled (v : ValueExt)
+  | broken   (r : ValueExt)
+  deriving Inhabited
+
+/-- An entry in a session's export table is either an exported actor
+(invokable via `op:deliver`) or a promise (subject to `op:listen` /
+the resolver-actor protocol). They share a single position namespace
+because both kinds are referenced on the wire as `<desc:export N>`. -/
+inductive Export
+  | actor   (h : SessionHandler)
+  | promise (state : IO.Ref PromiseState)
+
 /-- Per-connection mutable state. -/
 structure State where
   handshakeDone : IO.Ref Bool
@@ -245,7 +284,7 @@ structure State where
   /-- Per-session export table. `exports[i]` is bound to wire
   position `i + 1`; position 0 is reserved for the bootstrap fetch
   handler and is not stored here. -/
-  exports       : IO.Ref (Array SessionHandler)
+  exports       : IO.Ref (Array Export)
   /-- Server-wide outbound registry, shared across all sessions on
   this server. Read by the inbound handshake to spot crossed hellos;
   written by `runOutboundSession` (kicked off from the enlivener). -/
@@ -261,21 +300,28 @@ def create (ourLocation : ValueExt) (registry : Registry)
   let handshakeDone ← IO.mkRef false
   let aborted       ← IO.mkRef false
   let (pk, sk)      ← Crypto.ed25519Keypair
-  let exports       ← IO.mkRef (#[] : Array SessionHandler)
+  let exports       ← IO.mkRef (#[] : Array Export)
   pure { handshakeDone, aborted, ourLocation,
          sessionPubkey := pk, sessionSecret := sk,
          registry, exports, outboundReg }
 
-/-- Allocate a fresh export position bound to `h`. Returns the wire
-position (1-indexed). -/
-def exportAllocate (st : State) (h : SessionHandler) : IO Nat := do
+/-- Bind an actor handler at a fresh export position. -/
+def exportAllocateActor (st : State) (h : SessionHandler) : IO Nat := do
   let arr ← st.exports.get
-  st.exports.set (arr.push h)
+  st.exports.set (arr.push (.actor h))
   pure (arr.size + 1)
 
-/-- Look up the handler at wire position `pos`. Position 0 is the
-bootstrap, which is dispatched specially and returns `none` here. -/
-def exportLookup (st : State) (pos : Nat) : IO (Option SessionHandler) := do
+/-- Bind a fresh promise at a new export position. Returns the
+position and a ref to the promise's state. -/
+def exportAllocatePromise (st : State) : IO (Nat × IO.Ref PromiseState) := do
+  let stateRef ← IO.mkRef (PromiseState.pending [])
+  let arr ← st.exports.get
+  st.exports.set (arr.push (.promise stateRef))
+  pure (arr.size + 1, stateRef)
+
+/-- Look up the binding at wire position `pos`. Position 0 is the
+bootstrap, dispatched specially. -/
+def exportLookup (st : State) (pos : Nat) : IO (Option Export) := do
   if pos = 0 then return none
   let arr ← st.exports.get
   return arr[pos - 1]?
@@ -589,6 +635,70 @@ def greeterHandler : SessionHandler := fun args _rmd => do
     IO.eprintln s!"[session][greeter] expected 1 arg, got {args.length}"
     return []
 
+/-! ## Resolver and promise-resolver actors.
+
+A *resolver* is an actor: when invoked via `op:deliver` with either
+`[fulfill v]` or `[break r]`, it flips its associated promise into
+the corresponding terminal state and notifies any already-listening
+parties. -/
+
+/-- Build the notification frames for the listeners of a promise that
+just transitioned to a terminal `Resolution`. -/
+def notifyListeners (listeners : List Nat) (resolutionTag : List UInt8)
+    (value : ValueExt) : List ValueExt :=
+  listeners.map fun listenerPos =>
+    .record (.sym opDeliverSym)
+      [ buildDescExport listenerPos
+      , .list [.sym resolutionTag, value]
+      , .bool false
+      , .bool false
+      ]
+
+/-- The resolver actor handler: invoked by the client with
+`[fulfill v]` or `[break r]`. It transitions the promise state and
+returns frames to notify any registered listeners. -/
+def mkResolverHandler (promiseRef : IO.Ref PromiseState) : SessionHandler :=
+  fun args _rmd => do
+    match args with
+    | [.sym tag, value] =>
+      if tag = fulfillSym then
+        let toNotify : List Nat ← promiseRef.modifyGet fun s =>
+          match s with
+          | .pending ls => (ls, .fulfilled value)
+          | other       => ([], other)  -- already resolved, no-op
+        return notifyListeners toNotify fulfillSym value
+      else if tag = breakSym then
+        let toNotify : List Nat ← promiseRef.modifyGet fun s =>
+          match s with
+          | .pending ls => (ls, .broken value)
+          | other       => ([], other)
+        return notifyListeners toNotify breakSym value
+      else
+        IO.eprintln s!"[session][resolver] unknown tag: {String.fromUTF8! ⟨tag.toArray⟩}"
+        return []
+    | _ =>
+      IO.eprintln s!"[session][resolver] expected [tag, value], got {args.length} args"
+      return []
+
+/-- The promise-resolver bootstrap actor. When invoked (with no
+arguments) it allocates a fresh promise plus a resolver actor, and
+fulfills the caller's rmd with `[<desc:import-promise N_p>,
+<desc:import-object N_r>]` so the caller can both watch the promise
+(via `op:listen`) and resolve it (via `op:deliver` to the resolver). -/
+def mkPromiseResolverHandler (st : State) : SessionHandler :=
+  fun _args rmd => do
+    let (promisePos, promiseRef) ← st.exportAllocatePromise
+    let resolverPos ← st.exportAllocateActor (mkResolverHandler promiseRef)
+    IO.eprintln s!"[session][promise-resolver] allocated promise={promisePos} resolver={resolverPos}"
+    match extractImportObjPos rmd with
+    | some rmPos =>
+      return [buildFulfillValue rmPos
+        (.list [buildDescImportPromise promisePos,
+                buildDescImportObj resolverPos])]
+    | none =>
+      IO.eprintln "[session][promise-resolver] no rmd; not replying"
+      return []
+
 /-- Convert one of `OcapnLean.Captp.Bootstrap`'s value-returning
 handlers (`List ValueExt → IO ValueExt`) into a `SessionHandler` with
 fulfill-on-rmd semantics. If `rmd` is `<desc:import-object N>`, the
@@ -602,16 +712,27 @@ def liftBootstrapHandler (h : Bootstrap.Handler) : SessionHandler :=
     | none       => return []
 
 /-- Pick the handler to bind for a given swissnum. Returns `none` if
-the swissnum isn't recognised. The greeter and enlivener need
-per-session context, so they're constructed inline; pure
-value-returning handlers come from the `Bootstrap.Registry`. -/
+the swissnum isn't recognised. The greeter, enlivener, and
+promise-resolver need per-session context, so they're constructed
+inline; pure value-returning handlers come from the
+`Bootstrap.Registry`. -/
 def resolveSwissnum (st : State) (swiss : Swissnum) : Option SessionHandler :=
   if swiss = sturdyrefEnlivenerSwiss then
     some (mkEnlivenerHandler st)
   else if swiss = greeterSwiss then
     some greeterHandler
+  else if swiss = promiseResolverSwiss then
+    some (mkPromiseResolverHandler st)
   else
     (st.registry.lookup swiss).map liftBootstrapHandler
+
+/-- Parse `<op:listen <to> <resolve-me-desc> <wants-partial>>`. -/
+def parseOpListen (v : ValueExt) :
+    Option (ValueExt × ValueExt × Bool) :=
+  match v with
+  | .record (.sym lbl) [to, rmd, .bool wp] =>
+      if lbl = opListenSym then some (to, rmd, wp) else none
+  | _ => none
 
 /-! ## Top-level frame dispatcher. -/
 
@@ -639,7 +760,7 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
           IO.eprintln "[session] fetch: unknown swissnum"
           return []
         | some h =>
-          let newPos ← st.exportAllocate h
+          let newPos ← st.exportAllocateActor h
           match extractImportObjPos rmd with
           | none =>
             IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
@@ -655,7 +776,46 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
       | none =>
         IO.eprintln s!"[session] op:deliver to unknown export position {n}"
         return []
-      | some h => h args rmd
+      | some (.actor h) => h args rmd
+      | some (.promise _) =>
+        IO.eprintln s!"[session] op:deliver to promise position {n} (pipelining unsupported)"
+        return []
+
+/-- Handle an incoming `op:listen` after the handshake completes.
+Registers the caller as a listener on the targeted promise, or — if
+the promise is already resolved — fires the notification
+immediately. -/
+def dispatchOpListen (st : State) (frame : ValueExt) : IO (List ValueExt) := do
+  match parseOpListen frame with
+  | none =>
+    IO.eprintln "[session] malformed op:listen frame"
+    return []
+  | some (toVal, rmd, _wantsPartial) =>
+    match extractExportPos toVal, extractImportObjPos rmd with
+    | some n, some rmPos =>
+      match ← st.exportLookup n with
+      | some (.promise promiseRef) =>
+        promiseRef.modifyGet fun s =>
+          match s with
+          | .pending ls    => ([], .pending (rmPos :: ls))
+          | .fulfilled v   =>
+              ([.record (.sym opDeliverSym)
+                  [ buildDescExport rmPos
+                  , .list [.sym fulfillSym, v]
+                  , .bool false, .bool false
+                  ]], .fulfilled v)
+          | .broken r      =>
+              ([.record (.sym opDeliverSym)
+                  [ buildDescExport rmPos
+                  , .list [.sym breakSym, r]
+                  , .bool false, .bool false
+                  ]], .broken r)
+      | _ =>
+        IO.eprintln s!"[session] op:listen to non-promise position {n}"
+        return []
+    | _, _ =>
+      IO.eprintln "[session] op:listen with unrecognised to/rmd shape"
+      return []
 
 /-- Top-level dispatcher for one frame. -/
 def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
@@ -732,8 +892,22 @@ def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
         st.aborted.set true
         return [buildAbort "expected op:start-session as first message"]
 
-  -- Post-handshake routing.
-  dispatchOpDeliver st frame
+  -- Post-handshake routing: pick the dispatcher by the frame's
+  -- record label.
+  match frame with
+  | .record (.sym lbl) _ =>
+    if lbl = opDeliverSym then dispatchOpDeliver st frame
+    else if lbl = opListenSym then dispatchOpListen st frame
+    else if lbl = opAbortSym then do
+      IO.eprintln "[session] received op:abort; closing"
+      st.aborted.set true
+      return []
+    else do
+      IO.eprintln s!"[session] unsupported op after handshake: {String.fromUTF8! ⟨lbl.toArray⟩}"
+      return []
+  | _ =>
+    IO.eprintln "[session] non-record frame after handshake; ignoring"
+    return []
 
 /-- Run a session: build state, dispatch frames in a loop. -/
 def run (conn : FramedConn) (registry : Registry) (ourLocation : ValueExt)
