@@ -36,17 +36,21 @@ real Syrup bytes from the upstream test corpus.
 
 **Done already:**
 - [x] `OcapnLean/Captp/Spec.lean` — Veil module with `exportNew`, `importNew`,
-      `deliverWithAnswer`, `resolvePromise`, `breakPromise`, `abort` actions
-- [x] **P8 bootstrap-at-zero** proved — `bootstrap_at_zero ✅` over all 6 actions
+      `deliverWithAnswer`, `resolvePromise`, `breakPromise`, `abort`,
+      `opGet`, `opIndex`, `opUntag` actions
+- [x] **P8 bootstrap-at-zero** proved — `bootstrap_at_zero ✅` over all 9 actions
 - [x] **P2 promise monotonicity** proved — 3 sub-clauses
       (`promise_monotone_fulfilled`, `promise_monotone_broken`,
       `promise_disjoint`), all ✅ across the action set
 - [x] Supporting invariants: `imported_functional`, `exported_functional`,
       `resolved_implies_slot`, `broken_implies_slot`
-- [x] 55/55 SMT theorems discharged
+- [x] 79/79 SMT theorems discharged
 
 **Remaining:**
-- [ ] Add `op:listen`, `op:get`, `op:index`, `op:untag` actions
+- [ ] Add `op:listen` action (the executable impl already has it via
+      `Captp.Session`; landing it in the Veil spec waits on modelling
+      promise-listen subscriptions, which currently sit at the impl
+      layer only)
 - [ ] P7 abort terminal (needs history tracking — punted to a later milestone)
 
 ## Milestone M3 — E2E FIFO _(done 2026-05-14, ahead of schedule)_

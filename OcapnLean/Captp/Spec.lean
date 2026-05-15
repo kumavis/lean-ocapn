@@ -107,6 +107,42 @@ action abort = {
   alive := False
 }
 
+-- `op:get to-desc field-name answer-pos` — read a named field of the
+-- target. Same state-machine shape as `deliverWithAnswer`: allocates a
+-- fresh answer-slot for the pending promise. The field-name itself
+-- is application-level data and opaque to the safety properties.
+action opGet (target : pos) (newAnswer : pos) = {
+  require alive
+  require ∃ R, exported target R
+  require ¬ answerSlot newAnswer
+  require ∀ V, ¬ promiseResolved newAnswer V
+  require ∀ E, ¬ promiseBroken newAnswer E
+  answerSlot newAnswer := True
+}
+
+-- `op:index to-desc idx answer-pos` — index into the target. Same
+-- state-machine shape as `deliverWithAnswer`; the index is opaque.
+action opIndex (target : pos) (newAnswer : pos) = {
+  require alive
+  require ∃ R, exported target R
+  require ¬ answerSlot newAnswer
+  require ∀ V, ¬ promiseResolved newAnswer V
+  require ∀ E, ¬ promiseBroken newAnswer E
+  answerSlot newAnswer := True
+}
+
+-- `op:untag to-desc label answer-pos` — strip a tag wrapper from the
+-- target. Same state-machine shape as `deliverWithAnswer`; the label
+-- is opaque.
+action opUntag (target : pos) (newAnswer : pos) = {
+  require alive
+  require ∃ R, exported target R
+  require ¬ answerSlot newAnswer
+  require ∀ V, ¬ promiseResolved newAnswer V
+  require ∀ E, ¬ promiseBroken newAnswer E
+  answerSlot newAnswer := True
+}
+
 ------------------------------------------------------------------------
 -- Safety properties
 ------------------------------------------------------------------------
