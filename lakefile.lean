@@ -94,6 +94,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Run,
     `OcapnLean.Captp.Bootstrap,
     `OcapnLean.Captp.Session,
+    `OcapnLean.Captp.Client,
     `OcapnLean.Test.Interop
   ]
 
@@ -128,5 +129,15 @@ lean_exe «session-handshake-smoke» where
 
 lean_exe «enlivener-smoke» where
   root := `scripts.EnlivenerSmoke
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs
+
+lean_exe «client-smoke» where
+  root := `scripts.ClientSmoke
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs
+
+lean_exe «client-vs-external» where
+  root := `scripts.ClientVsExternal
   srcDir := "."
   moreLinkArgs := sodiumLinkArgs
