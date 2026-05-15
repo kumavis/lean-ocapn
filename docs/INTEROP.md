@@ -172,21 +172,85 @@ client-side scripts to `.dict []` before hitting that path).
 Normalised to `.dict []` in commit `<this PR>`; spec-compliant and
 universally accepted.
 
-### Ridley status
+### Disagreement 4 — `tcp-testing-only` framing: netstring vs raw
 
-Ridley's `_handleStartSessionOp` (`projects/ridley-dobjects/lib/src/net_layers/common_net_layer/common_net_layer.dart:222-261`)
-calls `Syrup.decode` with a `customTypeBuilder` that auto-lifts
-`<ocapn-peer …>` records into `PeerLocator` objects and
-`<op:start-session …>` into `StartSessionOp` objects
-(`lib/src/cap_tp/custom_type_builder.dart:28-36`).
+The `tcp-testing-only` netlayer is an OCapN test-suite convention
+(not formally spec'd; `Netlayers.md` only documents Tor Onion).
+The Python reference implementation in
+`projects/ocapn-test-suite/netlayers/testing_only_tcp.py` defines
+the convention by example.
 
-The earlier crash report in this file (commit `770a40f`,
-since superseded) traced to our Server's `.list []` hints, which
-Ridley's strict `PeerLocator.fromRecord` rejected with
-`PeerLocatorException("Hints must be either false or of type Map<String, String>")`.
-With the hints fix described above, Ridley should accept our
-handshake; re-verification with a freshly-rebuilt Ridley peer is
-still pending a Dart SDK environment.
+**Python ref** (`netlayers/base.py:83-87`):
+
+```python
+def send_message(self, message):
+    if isinstance(message, CapTPType):
+        message = message.to_syrup()
+    self.sendall(message)          # raw bytes, no length prefix
+```
+
+**Endo** (`projects/endo/packages/ocapn/src/netlayers/tcp-test-only.js:30-46`):
+
+```js
+const makeSocketOperations = (socket, writeLatencyMs) => ({
+  write(bytes) { socket.write(bytes); },   // raw bytes, no length prefix
+  end() { socket.end(); },
+});
+```
+
+**ocapn-lean** (`OcapnLean/Captp/Run.lean:66-68`):
+`FramedConn.writeFrame` does `c.net.send (ByteArray.mk bytes.toArray)` —
+raw Syrup bytes; the reader peels off one Syrup value at a time
+via `decodeExt`.
+
+**Ridley**
+(`projects/ridley-dobjects/lib/src/net_layers/tcp_testing_net_layer/tcp_testing_net_layer.dart:159-160`):
+
+```dart
+socket.write('${message.length}:');   // ASCII length prefix
+socket.add(message);                  // then the body
+```
+
+Receive side (lines 105-145) reads an ASCII digit run, expects `:`,
+then reads exactly `length` bytes.
+
+So Ridley implements **netstring framing** (`len:bytes`) while
+Python / Endo / ocapn-lean exchange **raw Syrup values**.
+Verified empirically: a Lean client connecting to a Ridley peer on
+`tcp-testing-only` (`dart run example/python_test_suite_server.dart
+--port 22047`) sends `<op:start-session …>` and Ridley throws
+`NetLayerException('Invalid message framing.')`:
+
+```
+[external-smoke] connecting to 127.0.0.1:22047
+uncaught exception: [client] EOF awaiting op:start-session
+---
+Unhandled exception:
+NetLayerException: Connection is closed. Cannot send message.
+  at common_net_layer.dart:95:31    (handleData exception path)
+```
+
+| Impl | Framing on `tcp-testing-only` | Conforms to Python ref |
+|---|---|---|
+| ocapn-lean (`OcapnLean/Captp/Run.lean:66`)         | raw Syrup | ✅ |
+| @endo/ocapn (`src/netlayers/tcp-test-only.js:32`)  | raw Syrup | ✅ |
+| Python ref (`netlayers/base.py:83`)                | raw Syrup | ✅ |
+| Ridley dobjects (`tcp_testing_net_layer.dart:159`) | netstring `len:bytes` | ❌ |
+
+**Assessment.** Ridley deviates from the Python reference
+implementation. The spec is silent on the `tcp-testing-only`
+framing, so neither side is strictly "wrong" per the document — but
+the Python suite is what Endo and we both pass 24/24 against, which
+makes raw Syrup the de-facto convention. A one-line fix on Ridley's
+side (drop the netstring prefix) would restore interop without
+affecting Ridley's other netlayers (which can keep whatever framing
+they need).
+
+Workaround we did *not* adopt: add a `--frame=netstring` flag to
+our `Captp.Client` so we can drive Ridley specifically. Rejected
+for now — same reasoning as the other disagreements, our codec
+stays spec/de-facto-conformant. Could revisit if there's appetite
+for a one-off Ridley interop test.
 
 ### Goblins testuds, current state
 
@@ -257,18 +321,33 @@ Possible root causes (not yet conclusive):
     listen loop *should* run. But evidently it doesn't —
     incoming connections aren't being accepted.
 
-This is a Goblins-side environmental/runtime bug, not a wire-format
-disagreement, so it's not "Disagreement 4". Tracked here for the
-record; an upstream issue against
-`codeberg.org/spritely/goblins` is the right next step but I haven't
-filed it because the reproduction story is still fuzzy and depends
-on host fibers behaviour.
+This is a Goblins-side environmental/runtime bug, separate from the
+wire-format disagreements above. Tracked here for the record; an
+upstream issue against `codeberg.org/spritely/goblins` is the right
+next step but I haven't filed it because the reproduction story is
+still fuzzy and depends on host fibers behaviour.
 
 ## Upstream follow-ups (drafts)
 
 The following are sketches of issues we'd file at the relevant
 upstream projects. We don't carry compatibility shims — our codec
 stays spec-conformant.
+
+* **`codeberg.org/ridley/DObjects`** — `tcp-testing-only`
+  netstring framing diverges from the Python reference (Disagreement
+  4 above). Reproducer is in this repo:
+  start the Ridley peer via
+  `dart run example/python_test_suite_server.dart --port 22047` in
+  a writable Ridley copy, then `lake exe client-vs-external --port
+  22047` from ocapn-lean — Ridley throws `NetLayerException(
+  'Invalid message framing.')` at the very first incoming byte
+  because we don't emit a `len:` prefix.
+  Suggested fix: in
+  `lib/src/net_layers/tcp_testing_net_layer/tcp_testing_net_layer.dart`,
+  switch the read side (lines 105-145) and the write side
+  (lines 159-160) to raw Syrup framing — i.e., delegate to the
+  same `syrup-read` / `syrup-write` loop other implementations use.
+  No other Ridley netlayer affected.
 
 * **`codeberg.org/spritely/goblins`** — `testuds` peer doesn't reply
   to inbound `op:start-session`. Reproducer:
