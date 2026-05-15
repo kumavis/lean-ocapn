@@ -59,6 +59,7 @@ def opDeliverSym       : List UInt8 := "op:deliver".toUTF8.toList
 def opAbortSym         : List UInt8 := "op:abort".toUTF8.toList
 def opListenSym        : List UInt8 := "op:listen".toUTF8.toList
 def descExportSym      : List UInt8 := "desc:export".toUTF8.toList
+def descAnswerSym      : List UInt8 := "desc:answer".toUTF8.toList
 def descImportObjSym   : List UInt8 := "desc:import-object".toUTF8.toList
 def descImportPromiseSym : List UInt8 := "desc:import-promise".toUTF8.toList
 def myLocationSym      : List UInt8 := "my-location".toUTF8.toList
@@ -170,6 +171,16 @@ def buildDeliverOnly (toPos : Nat) (args : List ValueExt) : ValueExt :=
     , .bool false
     ]
 
+/-- Build `<op:deliver <desc:export to> [break r] False False>` — the
+broken-promise notification (mirror of `buildFulfillValue`). -/
+def buildBreakValue (toPos : Nat) (r : ValueExt) : ValueExt :=
+  .record (.sym opDeliverSym)
+    [ buildDescExport toPos
+    , .list [.sym breakSym, r]
+    , .bool false
+    , .bool false
+    ]
+
 /-! ## Outbound session registry.
 
 The server tracks every outbound session it has *initiated* (currently
@@ -235,7 +246,18 @@ Common shapes a handler emits:
                                           the caller passed in `args`
 -/
 
-abbrev SessionHandler := List ValueExt → ValueExt → IO (List ValueExt)
+/-- An invocation handler. Receives the message's `args`, the
+caller's `resolve-me-desc`, and the caller's `answer-position`
+(`some N` if pipelining was requested, `none` otherwise). Returns
+the list of frames to emit on the same connection.
+
+When the handler produces a fresh actor (e.g., the car factory
+builder returns a car factory), it can optionally bind that actor's
+export position to the pipelined `answerPos` via
+`State.answersResolve`, so a follow-up `op:deliver
+<desc:answer N>` routes directly to it. -/
+abbrev SessionHandler :=
+  List ValueExt → ValueExt → Option Nat → IO (List ValueExt)
 
 /-! ## Promise machinery.
 
@@ -269,6 +291,22 @@ inductive Export
   | actor   (h : SessionHandler)
   | promise (state : IO.Ref PromiseState)
 
+/-- An *answer* is the server-side state of a pipelined call. The
+caller passed an `answer-position` and may follow up with messages
+targeting `<desc:answer N>` before our handler has had a chance to
+allocate the result actor. Three states are possible:
+
+  * `pending` — handler hasn't completed yet (shouldn't be observed
+    on a single-threaded per-connection event loop, but defined for
+    completeness),
+  * `resolved P` — the call returned an actor at export position `P`,
+  * `broken r` — the call broke with reason `r`; future messages
+    targeting this answer auto-break with the same reason. -/
+inductive AnswerState
+  | pending
+  | resolved (exportPos : Nat)
+  | broken   (r : ValueExt)
+
 /-- Per-connection mutable state. -/
 structure State where
   handshakeDone : IO.Ref Bool
@@ -289,6 +327,10 @@ structure State where
   this server. Read by the inbound handshake to spot crossed hellos;
   written by `runOutboundSession` (kicked off from the enlivener). -/
   outboundReg   : OutboundRegistry
+  /-- Per-session answer table for promise pipelining. Position →
+  current state. Pipelined `<desc:answer N>` recipients dispatch
+  through this. -/
+  answers       : IO.Ref (List (Nat × AnswerState))
 
 namespace State
 
@@ -301,9 +343,10 @@ def create (ourLocation : ValueExt) (registry : Registry)
   let aborted       ← IO.mkRef false
   let (pk, sk)      ← Crypto.ed25519Keypair
   let exports       ← IO.mkRef (#[] : Array Export)
+  let answers       ← IO.mkRef ([] : List (Nat × AnswerState))
   pure { handshakeDone, aborted, ourLocation,
          sessionPubkey := pk, sessionSecret := sk,
-         registry, exports, outboundReg }
+         registry, exports, outboundReg, answers }
 
 /-- Bind an actor handler at a fresh export position. -/
 def exportAllocateActor (st : State) (h : SessionHandler) : IO Nat := do
@@ -325,6 +368,18 @@ def exportLookup (st : State) (pos : Nat) : IO (Option Export) := do
   if pos = 0 then return none
   let arr ← st.exports.get
   return arr[pos - 1]?
+
+/-- Bind (or overwrite) the state of answer-position `pos`. -/
+def answersResolve (st : State) (pos : Nat) (s : AnswerState) : IO Unit :=
+  st.answers.modify fun xs =>
+    (pos, s) :: xs.filter (·.1 ≠ pos)
+
+/-- Look up the state of answer-position `pos`. Returns `pending` if
+unknown — the same as if the caller submitted an answer position we
+never saw, which lets the dispatcher emit a `break` reply uniformly. -/
+def answersLookup (st : State) (pos : Nat) : IO AnswerState := do
+  let xs ← st.answers.get
+  return ((xs.find? (·.1 = pos)).map (·.2)).getD .pending
 
 end State
 
@@ -396,6 +451,21 @@ def extractImportObjPos (v : ValueExt) : Option Nat :=
   | .record (.sym lbl) [.int n] =>
       if lbl = descImportObjSym && n ≥ 0 then some n.toNat else none
   | _ => none
+
+/-- Extract `N` from `<desc:answer N>` (the pipelining recipient form). -/
+def extractAnswerPos (v : ValueExt) : Option Nat :=
+  match v with
+  | .record (.sym lbl) [.int n] =>
+      if lbl = descAnswerSym && n ≥ 0 then some n.toNat else none
+  | _ => none
+
+/-- Extract a `Nat` from an op:deliver `answer-position` field, which
+on the wire is either `.int N` (some N ≥ 0) or `.bool false` (no
+pipelining). -/
+def extractMaybeAnswerNat (v : ValueExt) : Option Nat :=
+  match v with
+  | .int n => if n ≥ 0 then some n.toNat else none
+  | _      => none
 
 /-! ## ASCII / dict / sturdyref parsing. -/
 
@@ -598,7 +668,7 @@ outbound location) so we construct it here. -/
 parses the embedded peer, and spawns an outbound `op:start-session`
 in a dedicated task. The caller used `resolve-me-desc=False`, so we
 emit no frames. -/
-def mkEnlivenerHandler (st : State) : SessionHandler := fun args _rmd => do
+def mkEnlivenerHandler (st : State) : SessionHandler := fun args _rmd _ap => do
   match args with
   | [sref] =>
     match parseSturdyref sref with
@@ -622,7 +692,7 @@ def mkEnlivenerHandler (st : State) : SessionHandler := fun args _rmd => do
 argument — a reference to an object they want greeted — and the
 greeter delivers the literal string `"Hello"` to it. The call has no
 `resolve-me-desc`, only the callback in `args`. -/
-def greeterHandler : SessionHandler := fun args _rmd => do
+def greeterHandler : SessionHandler := fun args _rmd _ap => do
   match args with
   | [cb] =>
     match extractImportObjPos cb with
@@ -658,7 +728,7 @@ def notifyListeners (listeners : List Nat) (resolutionTag : List UInt8)
 `[fulfill v]` or `[break r]`. It transitions the promise state and
 returns frames to notify any registered listeners. -/
 def mkResolverHandler (promiseRef : IO.Ref PromiseState) : SessionHandler :=
-  fun args _rmd => do
+  fun args _rmd _ap => do
     match args with
     | [.sym tag, value] =>
       if tag = fulfillSym then
@@ -686,7 +756,7 @@ fulfills the caller's rmd with `[<desc:import-promise N_p>,
 <desc:import-object N_r>]` so the caller can both watch the promise
 (via `op:listen`) and resolve it (via `op:deliver` to the resolver). -/
 def mkPromiseResolverHandler (st : State) : SessionHandler :=
-  fun _args rmd => do
+  fun _args rmd _ap => do
     let (promisePos, promiseRef) ← st.exportAllocatePromise
     let resolverPos ← st.exportAllocateActor (mkResolverHandler promiseRef)
     IO.eprintln s!"[session][promise-resolver] allocated promise={promisePos} resolver={resolverPos}"
@@ -699,13 +769,63 @@ def mkPromiseResolverHandler (st : State) : SessionHandler :=
       IO.eprintln "[session][promise-resolver] no rmd; not replying"
       return []
 
+/-! ## Car factory chain.
+
+The test suite's `JadQ0++…` swissnum is a `Car factory builder`
+actor. Invoking it (zero args) produces a `Car factory` actor.
+Invoking the car factory with one arg `[color-sym, model-sym]`
+produces a `Car` actor. Invoking the car (zero args) produces the
+literal string `"Vroom! I am a {color} {model} car!"`.
+
+Each step is its own freshly-allocated actor; pipelined calls flow
+through `State.answers` so the client can chain messages without
+waiting for resolutions. -/
+
+def mkCarHandler (color model : List UInt8) : SessionHandler :=
+  fun _args rmd _ap => do
+    let s := "Vroom! I am a ".toUTF8.toList ++ color ++ " ".toUTF8.toList
+             ++ model ++ " car!".toUTF8.toList
+    match extractImportObjPos rmd with
+    | some rmPos => return [buildFulfillValue rmPos (.str s)]
+    | none       => return []
+
+def mkCarFactoryHandler (st : State) : SessionHandler :=
+  fun args rmd answerPos => do
+    match args with
+    | [.list [.sym color, .sym model]] =>
+      let carPos ← st.exportAllocateActor (mkCarHandler color model)
+      match answerPos with
+      | some ap => st.answersResolve ap (.resolved carPos)
+      | none => pure ()
+      match extractImportObjPos rmd with
+      | some rmPos => return [buildFulfillValue rmPos (buildDescImportObj carPos)]
+      | none => return []
+    | _ =>
+      let reason : ValueExt := .str "invalid car spec".toUTF8.toList
+      match answerPos with
+      | some ap => st.answersResolve ap (.broken reason)
+      | none => pure ()
+      match extractImportObjPos rmd with
+      | some rmPos => return [buildBreakValue rmPos reason]
+      | none => return []
+
+def mkCarFactoryBuilderHandler (st : State) : SessionHandler :=
+  fun _args rmd answerPos => do
+    let factoryPos ← st.exportAllocateActor (mkCarFactoryHandler st)
+    match answerPos with
+    | some ap => st.answersResolve ap (.resolved factoryPos)
+    | none => pure ()
+    match extractImportObjPos rmd with
+    | some rmPos => return [buildFulfillValue rmPos (buildDescImportObj factoryPos)]
+    | none => return []
+
 /-- Convert one of `OcapnLean.Captp.Bootstrap`'s value-returning
 handlers (`List ValueExt → IO ValueExt`) into a `SessionHandler` with
 fulfill-on-rmd semantics. If `rmd` is `<desc:import-object N>`, the
 handler's result `V` is wrapped in `<op:deliver <desc:export N>
 [fulfill V] False False>`. Otherwise no frame is emitted. -/
 def liftBootstrapHandler (h : Bootstrap.Handler) : SessionHandler :=
-  fun args rmd => do
+  fun args rmd _answerPos => do
     let v ← h args
     match extractImportObjPos rmd with
     | some rmPos => return [buildFulfillValue rmPos v]
@@ -723,6 +843,8 @@ def resolveSwissnum (st : State) (swiss : Swissnum) : Option SessionHandler :=
     some greeterHandler
   else if swiss = promiseResolverSwiss then
     some (mkPromiseResolverHandler st)
+  else if swiss = carFactoryBuilderSwiss then
+    some (mkCarFactoryBuilderHandler st)
   else
     (st.registry.lookup swiss).map liftBootstrapHandler
 
@@ -743,7 +865,35 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
   | none =>
     IO.eprintln s!"[session] post-handshake frame is not op:deliver; ignoring"
     return []
-  | some (toVal, args, _ap, rmd) =>
+  | some (toVal, args, apVal, rmd) =>
+    let answerPos := extractMaybeAnswerNat apVal
+    -- Recipient may be a `<desc:export N>` (direct call) or a
+    -- `<desc:answer N>` (pipelined call). Try answer first.
+    match extractAnswerPos toVal with
+    | some n =>
+      -- Pipelined: look up the answer's resolution.
+      match ← st.answersLookup n with
+      | .resolved exportPos =>
+        match ← st.exportLookup exportPos with
+        | some (.actor h) => do
+          let frames ← h args rmd answerPos
+          return frames
+        | _ =>
+          IO.eprintln s!"[session] pipelined op:deliver to export {exportPos} which is not an actor"
+          return []
+      | .broken r =>
+        -- Auto-propagate the break: record this answer as broken too,
+        -- and reply to rmd (if any) with a break notification.
+        match answerPos with
+        | some ap => st.answersResolve ap (.broken r)
+        | none => pure ()
+        match extractImportObjPos rmd with
+        | some rmPos => return [buildBreakValue rmPos r]
+        | none       => return []
+      | .pending =>
+        IO.eprintln s!"[session] op:deliver to pending <desc:answer {n}> — should not happen with TCP ordering"
+        return []
+    | none =>
     match extractExportPos toVal with
     | none =>
       IO.eprintln "[session] op:deliver to non-<desc:export …>; ignoring"
@@ -761,6 +911,9 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
           return []
         | some h =>
           let newPos ← st.exportAllocateActor h
+          match answerPos with
+          | some ap => st.answersResolve ap (.resolved newPos)
+          | none => pure ()
           match extractImportObjPos rmd with
           | none =>
             IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
@@ -776,9 +929,9 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
       | none =>
         IO.eprintln s!"[session] op:deliver to unknown export position {n}"
         return []
-      | some (.actor h) => h args rmd
+      | some (.actor h) => h args rmd answerPos
       | some (.promise _) =>
-        IO.eprintln s!"[session] op:deliver to promise position {n} (pipelining unsupported)"
+        IO.eprintln s!"[session] op:deliver to promise position {n} (pipelining via desc:export unsupported)"
         return []
 
 /-- Handle an incoming `op:listen` after the handshake completes.
