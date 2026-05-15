@@ -712,9 +712,25 @@ def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
           IO.eprintln s!"[session] handshake OK, replying with signed op:start-session"
           return [reply]
     | none =>
-      IO.eprintln s!"[session] first frame is not op:start-session; aborting"
-      st.aborted.set true
-      return [buildAbort "expected op:start-session as first message"]
+      -- Special case: an inbound `op:abort` before the handshake means
+      -- the peer is unilaterally ending the conversation. We silently
+      -- drop the connection rather than echoing our own `op:abort` back
+      -- (the test suite expects the read side to time out, not to
+      -- receive a counter-abort).
+      match frame with
+      | .record (.sym lbl) _ =>
+        if lbl = opAbortSym then
+          IO.eprintln "[session] received op:abort before handshake; closing"
+          st.aborted.set true
+          return []
+        else
+          IO.eprintln s!"[session] first frame is not op:start-session; aborting"
+          st.aborted.set true
+          return [buildAbort "expected op:start-session as first message"]
+      | _ =>
+        IO.eprintln s!"[session] first frame is not op:start-session; aborting"
+        st.aborted.set true
+        return [buildAbort "expected op:start-session as first message"]
 
   -- Post-handshake routing.
   dispatchOpDeliver st frame
