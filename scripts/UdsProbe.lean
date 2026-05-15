@@ -18,5 +18,4 @@ def main (args : List String) : IO Unit := do
   match ← conn.readFrame with
   | none => IO.println "[probe] EOF"
   | some f => IO.println s!"[probe] received: {repr f}"
-  Uds.udsClose 0  -- best effort; conn close handled below
   try conn.close catch _ => pure ()
