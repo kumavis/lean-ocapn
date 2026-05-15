@@ -1,11 +1,9 @@
--- Top-level module for ocapn-lean.
---
--- Submodules:
---   * `OcapnLean.Model`           — abstract OCapN data model
---   * `OcapnLean.Captp.Messages`  — algebraic types for op:* and desc:*
---   * `OcapnLean.Captp.Spec`      — Veil module: single-peer CapTP spec
+-- Top-level umbrella module for ocapn-lean. Re-exports every public
+-- submodule so `import OcapnLean` is sufficient for downstream users.
 
 import OcapnLean.Model
+import OcapnLean.Crypto
+import OcapnLean.Uds
 import OcapnLean.Captp.Messages
 import OcapnLean.Captp.Spec
 import OcapnLean.Captp.Twoparty
@@ -17,9 +15,13 @@ import OcapnLean.Syrup
 import OcapnLean.Captp.Bootstrap
 import OcapnLean.Captp.Impl
 import OcapnLean.Captp.Refinement
+import OcapnLean.Captp.RefinementExtended
 import OcapnLean.Captp.Run
 import OcapnLean.Captp.Session
+import OcapnLean.Captp.Client
 import OcapnLean.Netlayer
 import OcapnLean.Netlayer.Tcp
+import OcapnLean.Netlayer.Uds
+import OcapnLean.Server
 import OcapnLean.Syrup.Extended
 import OcapnLean.Test.Interop
