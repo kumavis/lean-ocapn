@@ -4,7 +4,7 @@
 	shallow = true
 [submodule "projects/goblins"]
 	path = projects/goblins
-	url = https://gitlab.com/spritely/guile-goblins
+	url = https://codeberg.org/spritely/goblins
 	shallow = true
 [submodule "projects/syrup-ocapn"]
 	path = projects/syrup-ocapn
