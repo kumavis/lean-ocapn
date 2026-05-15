@@ -73,6 +73,35 @@ The Lean-side client driver in `OcapnLean.Captp.Client` can also
 | @endo/ocapn         | TCP | echo round-trip OK |
 | ocapn-lean (self)   | UDS | echo round-trip OK (`lake exe uds-smoke`) |
 
+## Ridley dobjects (TCP)
+
+Ridley's [`tcp-testing-only`](ridley-dobjects/lib/src/net_layers/tcp_testing_net_layer/tcp_testing_net_layer.dart)
+netlayer is wire-compatible with Python's at the socket level. We
+wrote a small Dart driver that uses Ridley's `CapTP` + the
+`InsecureAuthenticator` and registers the standard
+swissnums via `sturdyRefManager.register`:
+`dobjects-work/example/python_test_suite_server.dart`.
+
+Setup uses a writable copy of the read-only submodule, plus an
+ad-hoc `test/utils/libsodium_path.txt` so Ridley's libsodium loader
+can find its `.so`:
+
+    rsync -a projects/ridley-dobjects/ ~/dobjects-work/
+    echo /nix/store/.../libsodium.so > ~/dobjects-work/test/utils/libsodium_path.txt
+    nix-shell -p dart --command \
+      "cd ~/dobjects-work && dart pub get && \
+       dart run example/python_test_suite_server.dart --port 22047"
+
+**Status:** Ridley's existing `tcp_testing_net_layer_test` passes
+all seven cases internally (peer A ↔ peer B over loopback TCP). On
+interop with the spec wire form: when the Lean client connects and
+sends `op:start-session`, Ridley's `CommonNetLayer.initCommon`
+throws inside its handshake and the unhandled exception kills the
+process. Same shape of marshalling mismatch as Goblins — Ridley's
+`_handleStartSessionOp` parses with typed-record expectations the
+naked-spec format doesn't satisfy. Documented as a follow-up;
+neither side needs to be patched first.
+
 ## Goblins (testuds)
 
 We added a UDS netlayer (`OcapnLean.Netlayer.Uds` + `c/uds.c`)
