@@ -202,6 +202,22 @@ def buildGcAnswers (positions : List Nat) : ValueExt :=
   .record (.sym opGcAnswersSym)
     [ .list (positions.map fun n => .int (Int.ofNat n)) ]
 
+/-- Build `<desc:sig-envelope <inner> <sig-val>>`. -/
+def buildSigEnvelope (inner : ValueExt) (sig : ByteArray) : ValueExt :=
+  .record (.sym descSigEnvelopeSym) [inner, buildLocationSig sig]
+
+/-- Build `<desc:handoff-receive receivingSession receivingSide
+handoffCount signedGive>`. -/
+def buildHandoffReceive (receivingSession : ByteArray)
+    (receivingSide : ByteArray) (handoffCount : Nat)
+    (signedGive : ValueExt) : ValueExt :=
+  .record (.sym descHandoffReceiveSym)
+    [ .bytes receivingSession.toList
+    , .bytes receivingSide.toList
+    , .int (Int.ofNat handoffCount)
+    , signedGive
+    ]
+
 /-! ## Reference scanning for GC.
 
 When an inbound `op:deliver`'s args reference one of *the peer's*
@@ -717,18 +733,13 @@ def extractPeerKey (v : ValueExt) : Option PeerKey :=
       else (peerAddrBytes addr).map (fun a => (transport, a))
   | _ => none
 
-/-- Parse an `<ocapn-sturdyref <ocapn-peer 'tcp-testing-only ADDR HINTS> SWISS>`
-into `(SocketAddress, PeerKey, swiss-bytes)`. Only `tcp-testing-only`
-is supported here. -/
-def parseSturdyref (v : ValueExt) :
-    Option (SocketAddress × PeerKey × List UInt8) :=
+/-- Parse a `<ocapn-peer 'tcp-testing-only ADDR HINTS>` into its
+`(SocketAddress, PeerKey)` form. Only `tcp-testing-only` is
+supported. -/
+def parseOcapnPeerTcp (v : ValueExt) : Option (SocketAddress × PeerKey) :=
   match v with
-  | .record (.sym sLbl)
-      [ .record (.sym pLbl) [.sym transport, addr, hintsVal]
-      , .bytes swiss
-      ] =>
-    if sLbl ≠ sturdyrefSym then none
-    else if pLbl ≠ peerSym then none
+  | .record (.sym pLbl) [.sym transport, addr, hintsVal] =>
+    if pLbl ≠ peerSym then none
     else if transport ≠ tcpTestingOnlySym then none
     else
       match peerAddrBytes addr with
@@ -749,10 +760,20 @@ def parseSturdyref (v : ValueExt) :
             | some ip, some n =>
               if n < 65536 then
                 some ({ addr := ip, port := n.toUInt16 } |> SocketAddress.v4,
-                      (transport, addrBs), swiss)
+                      (transport, addrBs))
               else none
             | _, _ => none
           | _, _ => none
+  | _ => none
+
+/-- Parse an `<ocapn-sturdyref <ocapn-peer 'tcp-testing-only ADDR HINTS> SWISS>`
+into `(SocketAddress, PeerKey, swiss-bytes)`. -/
+def parseSturdyref (v : ValueExt) :
+    Option (SocketAddress × PeerKey × List UInt8) :=
+  match v with
+  | .record (.sym sLbl) [peer, .bytes swiss] =>
+    if sLbl ≠ sturdyrefSym then none
+    else (parseOcapnPeerTcp peer).map fun (addr, key) => (addr, key, swiss)
   | _ => none
 
 /-! ## Public Identifier (spec §"Public Identifier").
@@ -1239,6 +1260,90 @@ def depositGift (st : State) (giftId : List UInt8) (refr : ValueExt) :
       IO.eprintln s!"[session][deposit-gift] position {n} is not an actor"
       return []
 
+/-! ## Handoff receiver behaviour.
+
+When we receive an `op:deliver` whose args contain
+`<desc:sig-envelope <desc:handoff-give …>>` whose `receiver-key`
+field is our own session pubkey, we are the intended *receiver* of
+the gift. Per spec, we must open an outbound connection to the
+exporter named by `handoff-give.exporter-location`, sign a fresh
+`<desc:handoff-receive …>` with our session privkey, and send
+
+  `<op:deliver <desc:export 0>
+               [withdraw-gift <signed-handoff-receive>] False False>`
+
+on the new connection. -/
+
+/-- Compare the `q` bytes of a `<public-key (ecc (curve Ed25519)
+(flags eddsa) (q PK)))>` record against our session pubkey. -/
+def receiverKeyMatchesOurSession (st : State) (recvKey : ValueExt) : Bool :=
+  match extractPubkey recvKey with
+  | some keyBytes => keyBytes = st.sessionPubkey.toList
+  | none          => false
+
+/-- Open an outbound connection to the exporter, perform the
+op:start-session handshake, and send a signed
+`[withdraw-gift <signed-handoff-receive>]` to its bootstrap. -/
+def doHandoffReceive (st : State) (signedGive : ValueExt)
+    (addr : SocketAddress) : IO Unit := do
+  let net ← Netlayer.Tcp.connect addr
+  let conn ← FramedConn.of net
+  -- Fresh per-session keypair for this gifter↔exporter session.
+  let (newPk, newSk) ← Crypto.ed25519Keypair
+  let payload := locationSigningPayload st.ourLocation
+  let outboundSig := Crypto.ed25519Sign newSk payload
+  let hello := buildStartSessionReply (baToList newPk) outboundSig st.ourLocation
+  conn.writeFrame hello
+  IO.eprintln "[handoff-receive] sent outbound op:start-session"
+  match ← conn.readFrame with
+  | none => IO.eprintln "[handoff-receive] EOF awaiting peer op:start-session"
+  | some reply =>
+    match extractStartSession reply with
+    | none =>
+      IO.eprintln s!"[handoff-receive] peer reply not op:start-session"
+    | some (_ver, theirPk, _theirLoc, _theirSig) =>
+      let myPubkeyRec := buildSessionPubkey (baToList newPk)
+      let outboundSid := sessionId myPubkeyRec theirPk
+      let myPubid := publicIdentifier myPubkeyRec
+      let receiveInner :=
+        buildHandoffReceive outboundSid myPubid 0 signedGive
+      let receivePayload := listToBa (Encode.encodeExt receiveInner)
+      -- Signed with our *gifter↔receiver* session privkey — that's
+      -- the receiver_key the gifter put in the handoff-give.
+      let receiveSig := Crypto.ed25519Sign st.sessionSecret receivePayload
+      let signedReceive := buildSigEnvelope receiveInner receiveSig
+      let withdrawMsg : ValueExt :=
+        .record (.sym opDeliverSym)
+          [ buildDescExport 0
+          , .list [.sym withdrawGiftSym, signedReceive]
+          , .bool false
+          , .bool false
+          ]
+      conn.writeFrame withdrawMsg
+      IO.eprintln "[handoff-receive] sent withdraw-gift to exporter"
+
+/-- Scan an `op:deliver`'s args for a `<desc:sig-envelope
+<desc:handoff-give …>>` addressed to us, and if found spawn a
+background task that performs the outbound handoff receive. -/
+def maybeInitiateHandoffReceive (st : State) (args : List ValueExt) :
+    IO Unit := do
+  for arg in args do
+    match parseSigEnvelope arg with
+    | none => pure ()
+    | some (inner, _sig) =>
+      match parseHandoffGive inner with
+      | none => pure ()
+      | some phg =>
+        if receiverKeyMatchesOurSession st phg.receiverKey then
+          match parseOcapnPeerTcp phg.exporterLocation with
+          | none =>
+            IO.eprintln "[handoff-receive] could not parse exporter location"
+          | some (addr, _peerKey) =>
+            let _ ← IO.asTask (prio := .dedicated) do
+              try doHandoffReceive st arg addr
+              catch e =>
+                IO.eprintln s!"[handoff-receive] outbound failed: {e}"
+
 /-- Convert one of `OcapnLean.Captp.Bootstrap`'s value-returning
 handlers (`List ValueExt → IO ValueExt`) into a `SessionHandler` with
 fulfill-on-rmd semantics. If `rmd` is `<desc:import-object N>`, the
@@ -1367,6 +1472,11 @@ def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
     return []
   | some (toVal, args, apVal, rmd) =>
     let answerPos := extractMaybeAnswerNat apVal
+    -- Cross-cutting concern: an `<desc:sig-envelope <desc:handoff-give …>>`
+    -- in the args is a request that we become the *receiver* in a
+    -- three-party handoff. Detect and spawn before the normal dispatch
+    -- (so the recipient actor still gets the message verbatim).
+    maybeInitiateHandoffReceive st args
     let frames ← dispatchOpDeliverCore st toVal args answerPos rmd
     match gcExportsFor args with
     | some gc => return frames ++ [gc]
