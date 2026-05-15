@@ -56,14 +56,22 @@ input_file udsShimSrc where
 
 /-- libsodium link args, used wherever the FFI shim is pulled in.
 
-The `--allow-shlib-undefined` is needed because libsodium references
-GLIBC_2.33 symbols (e.g. `fstat`) which the Lean toolchain's bundled
-glibc (≤2.26) doesn't export. The dynamic loader picks the system's
-glibc 2.42 at runtime, which has them. -/
+We pass `libsodium.so` as an *absolute file path* rather than
+`-L<dir> -lsodium`. The `-L<dir>` form prepends `<dir>` to the
+linker's library search path, which causes problems on systems
+where `<dir>` happens to be `/usr/lib/x86_64-linux-gnu/`
+(Ubuntu CI): the Lean toolchain's `-lc_nonshared` then resolves
+to the system's stripped-down `libc_nonshared.a` (Ubuntu 22.04+
+removed `__libc_csu_init/fini`) instead of the version bundled
+with the Lean toolchain.
+
+The `--allow-shlib-undefined` is needed because libsodium
+references GLIBC_2.33 symbols (e.g. `fstat`) which the Lean
+toolchain's bundled glibc (≤2.26) doesn't export. The dynamic
+loader picks the system's glibc 2.42 at runtime, which has them. -/
 def sodiumLinkArgs : Array String := #[
-  s!"-L{libsodium.libDirSync}",
+  s!"{libsodium.libDirSync}/libsodium.so",
   s!"-Wl,-rpath,{libsodium.libDirSync}",
-  "-lsodium",
   "-Wl,--allow-shlib-undefined"
 ]
 
