@@ -86,4 +86,17 @@ partial def runHandler (c : FramedConn)
     | some reply => c.writeFrame reply
     runHandler c handler
 
+/-- Multi-frame variant: handler returns a list of frames to emit on
+the same connection. Used by `Captp.Session` whose handlers may need
+to send several frames per inbound message (e.g. the greeter, which
+delivers `"Hello"` to a callback the caller passed in). -/
+partial def runHandlerN (c : FramedConn)
+    (handler : ValueExt → IO (List ValueExt)) : IO Unit := do
+  match ← c.readFrame with
+  | none => pure ()
+  | some frame =>
+    let replies ← handler frame
+    for r in replies do c.writeFrame r
+    runHandlerN c handler
+
 end OcapnLean.Captp

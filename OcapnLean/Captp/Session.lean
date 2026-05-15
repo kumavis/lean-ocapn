@@ -140,6 +140,29 @@ def buildFulfillDeliver (toPos : Nat) (newImportPos : Nat) : ValueExt :=
     , .bool false
     ]
 
+/-- Build `<op:deliver <desc:export to> [fulfill V] False False>`. Used
+when a value-returning handler successfully produces `V` and the
+caller asked us to deliver the resolution to its export `to`. -/
+def buildFulfillValue (toPos : Nat) (v : ValueExt) : ValueExt :=
+  .record (.sym opDeliverSym)
+    [ buildDescExport toPos
+    , .list [.sym fulfillSym, v]
+    , .bool false
+    , .bool false
+    ]
+
+/-- Build `<op:deliver <desc:export to> args False False>` — a plain
+deliver-only message used by callback-style handlers (e.g. the
+greeter, which delivers `["Hello"]` to the reference the caller
+passed as its first arg). -/
+def buildDeliverOnly (toPos : Nat) (args : List ValueExt) : ValueExt :=
+  .record (.sym opDeliverSym)
+    [ buildDescExport toPos
+    , .list args
+    , .bool false
+    , .bool false
+    ]
+
 /-! ## Outbound session registry.
 
 The server tracks every outbound session it has *initiated* (currently
@@ -187,12 +210,25 @@ end OutboundRegistry
 
 /-! ## Per-session handler type and state.
 
-`SessionHandler` is what an export-position is bound to: it receives
-the `args` of an inbound `op:deliver` and may return a value to
-fulfill the caller's `resolve-me-desc` (or `none` for void).
+`SessionHandler` is what an export-position is bound to. It receives
+the `args` of an inbound `op:deliver` plus the message's
+`resolve-me-desc` (the slot the caller wants any reply delivered to)
+and returns the list of frames to emit back on the connection. The
+list can be empty (no observable output — useful for deliver-only
+notifications and for handlers that do their work in a background
+task, e.g. the sturdyref enlivener).
+
+Common shapes a handler emits:
+
+  * `[]`                                  no reply expected (rmd = false)
+  * `[<op:deliver to=desc:export N
+                  [fulfill V] _ _>]`      promise resolution to the caller
+  * `[<op:deliver to=desc:export N
+                  [V…] _ _>]`             generic deliver to a callback
+                                          the caller passed in `args`
 -/
 
-abbrev SessionHandler := List ValueExt → IO (Option ValueExt)
+abbrev SessionHandler := List ValueExt → ValueExt → IO (List ValueExt)
 
 /-- Per-connection mutable state. -/
 structure State where
@@ -515,8 +551,8 @@ outbound location) so we construct it here. -/
 /-- The sturdyref-enlivener handler: receives `[<ocapn-sturdyref …>]`,
 parses the embedded peer, and spawns an outbound `op:start-session`
 in a dedicated task. The caller used `resolve-me-desc=False`, so we
-return `none` (no reply). -/
-def mkEnlivenerHandler (st : State) : SessionHandler := fun args => do
+emit no frames. -/
+def mkEnlivenerHandler (st : State) : SessionHandler := fun args _rmd => do
   match args with
   | [sref] =>
     match parseSturdyref sref with
@@ -528,88 +564,102 @@ def mkEnlivenerHandler (st : State) : SessionHandler := fun args => do
           runOutboundSession addr peerKey loc reg
         catch e =>
           IO.eprintln s!"[session][enlivener] outbound failed: {e}"
-      return none
+      return []
     | none =>
       IO.eprintln "[session][enlivener] could not parse sturdyref"
-      return none
+      return []
   | _ =>
     IO.eprintln s!"[session][enlivener] expected 1 arg, got {args.length}"
-    return none
+    return []
+
+/-- The greeter handler. Spec contract: the caller passes one
+argument — a reference to an object they want greeted — and the
+greeter delivers the literal string `"Hello"` to it. The call has no
+`resolve-me-desc`, only the callback in `args`. -/
+def greeterHandler : SessionHandler := fun args _rmd => do
+  match args with
+  | [cb] =>
+    match extractImportObjPos cb with
+    | some n =>
+      return [buildDeliverOnly n [.str "Hello".toUTF8.toList]]
+    | none =>
+      IO.eprintln s!"[session][greeter] arg is not a <desc:import-object …>: {repr cb}"
+      return []
+  | _ =>
+    IO.eprintln s!"[session][greeter] expected 1 arg, got {args.length}"
+    return []
 
 /-- Convert one of `OcapnLean.Captp.Bootstrap`'s value-returning
-handlers (`List ValueExt → IO ValueExt`) into a `SessionHandler`. -/
-def liftBootstrapHandler (h : Bootstrap.Handler) : SessionHandler := fun args => do
-  let v ← h args
-  return some v
+handlers (`List ValueExt → IO ValueExt`) into a `SessionHandler` with
+fulfill-on-rmd semantics. If `rmd` is `<desc:import-object N>`, the
+handler's result `V` is wrapped in `<op:deliver <desc:export N>
+[fulfill V] False False>`. Otherwise no frame is emitted. -/
+def liftBootstrapHandler (h : Bootstrap.Handler) : SessionHandler :=
+  fun args rmd => do
+    let v ← h args
+    match extractImportObjPos rmd with
+    | some rmPos => return [buildFulfillValue rmPos v]
+    | none       => return []
 
 /-- Pick the handler to bind for a given swissnum. Returns `none` if
-the swissnum isn't recognised. -/
+the swissnum isn't recognised. The greeter and enlivener need
+per-session context, so they're constructed inline; pure
+value-returning handlers come from the `Bootstrap.Registry`. -/
 def resolveSwissnum (st : State) (swiss : Swissnum) : Option SessionHandler :=
   if swiss = sturdyrefEnlivenerSwiss then
     some (mkEnlivenerHandler st)
+  else if swiss = greeterSwiss then
+    some greeterHandler
   else
     (st.registry.lookup swiss).map liftBootstrapHandler
 
 /-! ## Top-level frame dispatcher. -/
 
 /-- Handle an incoming `op:deliver` after the handshake completes.
-Returns the optional reply frame. -/
-def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
+Returns the frames to emit (possibly empty). -/
+def dispatchOpDeliver (st : State) (frame : ValueExt) : IO (List ValueExt) := do
   match parseOpDeliver frame with
   | none =>
     IO.eprintln s!"[session] post-handshake frame is not op:deliver; ignoring"
-    return none
+    return []
   | some (toVal, args, _ap, rmd) =>
     match extractExportPos toVal with
     | none =>
       IO.eprintln "[session] op:deliver to non-<desc:export …>; ignoring"
-      return none
+      return []
     | some 0 =>
       -- Bootstrap object: only `fetch` is supported.
       match args with
       | [.sym method, .bytes swiss] =>
         if method ≠ fetchSym then
           IO.eprintln s!"[session] bootstrap method {String.fromUTF8! ⟨method.toArray⟩} not supported"
-          return none
+          return []
         match resolveSwissnum st swiss with
         | none =>
           IO.eprintln "[session] fetch: unknown swissnum"
-          return none
+          return []
         | some h =>
           let newPos ← st.exportAllocate h
           match extractImportObjPos rmd with
           | none =>
             IO.eprintln "[session] fetch without resolve-me-desc; allocated but not replying"
-            return none
+            return []
           | some rmPos =>
             IO.eprintln s!"[session] fetch resolved → export pos {newPos}, fulfilling rm={rmPos}"
-            return some (buildFulfillDeliver rmPos newPos)
+            return [buildFulfillDeliver rmPos newPos]
       | _ =>
         IO.eprintln "[session] bootstrap call with unsupported args shape"
-        return none
+        return []
     | some n =>
       match ← st.exportLookup n with
       | none =>
         IO.eprintln s!"[session] op:deliver to unknown export position {n}"
-        return none
-      | some h =>
-        let result ← h args
-        match result, extractImportObjPos rmd with
-        | some v, some rmPos =>
-          -- Caller wants a fulfill back. For now we only wrap plain
-          -- values; if the handler chose to return its own
-          -- import-object descriptor it just rides through unchanged.
-          return some (.record (.sym opDeliverSym)
-            [ buildDescExport rmPos
-            , .list [.sym fulfillSym, v]
-            , .bool false
-            , .bool false
-            ])
-        | _, _ => return none
+        return []
+      | some h => h args rmd
 
 /-- Top-level dispatcher for one frame. -/
-def dispatch (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
-  if ← st.aborted.get then return none
+def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
+  if ← st.aborted.get then return []
 
   -- Handshake phase: we expect the first frame to be op:start-session.
   if !(← st.handshakeDone.get) then
@@ -617,16 +667,16 @@ def dispatch (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
     | some (version, clientPk, clientLoc, clientSig) =>
       if version ≠ captpVersion.toUTF8.toList then
         st.aborted.set true
-        return some (buildAbort s!"unsupported captp version: {String.fromUTF8! ⟨version.toArray⟩}")
+        return [buildAbort s!"unsupported captp version: {String.fromUTF8! ⟨version.toArray⟩}"]
       else if ¬ verifyClientLocationSig clientPk clientLoc clientSig then
         IO.eprintln s!"[session] client signature failed verification; aborting"
         st.aborted.set true
-        return some (buildAbort "invalid acceptable-location signature")
+        return [buildAbort "invalid acceptable-location signature"]
       else
         -- Crossed-hellos check: if we have an outbound session pending
         -- to this same peer, compare Public Identifiers and abort the
         -- lower one (spec §"Crossed Hellos Resolution").
-        let crossedResult : Option (Option ValueExt) ←
+        let crossedAbort : Option ValueExt ←
           match extractPeerKey clientLoc with
           | none => pure none
           | some peerKey =>
@@ -643,28 +693,28 @@ def dispatch (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
                 try pending.conn.writeFrame (buildAbort "Crossed hellos mitigated")
                 catch _ => pure ()
                 st.outboundReg.remove peerKey
-                pure (some none)  -- accept inbound; signal "no early return"
+                pure none
               | .gt =>
                 IO.eprintln "[session] crossed-hellos: inbound loses, aborting inbound"
                 st.aborted.set true
-                pure (some (some (buildAbort "Crossed hellos mitigated")))
+                pure (some (buildAbort "Crossed hellos mitigated"))
               | .eq =>
                 IO.eprintln "[session] crossed-hellos: identical pubids; aborting inbound"
                 st.aborted.set true
-                pure (some (some (buildAbort "Crossed hellos mitigated")))
-        match crossedResult with
-        | some (some abortFrame) => return some abortFrame
-        | _ =>
+                pure (some (buildAbort "Crossed hellos mitigated"))
+        match crossedAbort with
+        | some abortFrame => return [abortFrame]
+        | none =>
           st.handshakeDone.set true
           let payload := locationSigningPayload st.ourLocation
           let sig     := Crypto.ed25519Sign st.sessionSecret payload
           let reply   := buildStartSessionReply (baToList st.sessionPubkey) sig st.ourLocation
           IO.eprintln s!"[session] handshake OK, replying with signed op:start-session"
-          return some reply
+          return [reply]
     | none =>
       IO.eprintln s!"[session] first frame is not op:start-session; aborting"
       st.aborted.set true
-      return some (buildAbort "expected op:start-session as first message")
+      return [buildAbort "expected op:start-session as first message"]
 
   -- Post-handshake routing.
   dispatchOpDeliver st frame
@@ -673,6 +723,6 @@ def dispatch (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
 def run (conn : FramedConn) (registry : Registry) (ourLocation : ValueExt)
     (outboundReg : OutboundRegistry) : IO Unit := do
   let st ← State.create ourLocation registry outboundReg
-  runHandler conn (dispatch st)
+  runHandlerN conn (dispatch st)
 
 end OcapnLean.Captp.Session
