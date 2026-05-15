@@ -43,10 +43,11 @@ def main : IO Unit := do
 
   -- Spin up the server side in a dedicated task.
   let acceptOne ← Tcp.listen addr
+  let outboundReg ← Session.OutboundRegistry.create
   let _serverTask ← IO.asTask (prio := .dedicated) do
     let net ← acceptOne
     let conn ← FramedConn.of net
-    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc
+    Session.run conn Captp.Bootstrap.defaultRegistry serverLoc outboundReg
 
   IO.sleep 50
 

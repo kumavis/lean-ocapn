@@ -31,9 +31,17 @@ This module covers:
     TCP connection and performs an `op:start-session` against it.
     This is what the crossed-hellos tests need to set up a second leg.
 
+  * **Crossed-hellos resolution** (Spec §"Crossed Hellos Resolution"):
+    every outbound session our enlivener spawns is registered in a
+    server-wide `OutboundRegistry` keyed by the remote peer's
+    `(transport, address)`. When an inbound `op:start-session`
+    arrives whose `acceptable-location` matches an entry, we compute
+    each side's Public Identifier (`SHA-256(SHA-256(syrup(pubkey)))`)
+    and abort the lower one.
+
 The richer subset (promise pipelining, three-party handoffs, GC
-refcounts, `op:listen`, full crossed-hellos detection) extends
-naturally from this scaffold but is intentionally out of scope here.
+refcounts, `op:listen`) extends naturally from this scaffold but is
+intentionally out of scope here.
 -/
 
 namespace OcapnLean.Captp.Session
@@ -132,6 +140,51 @@ def buildFulfillDeliver (toPos : Nat) (newImportPos : Nat) : ValueExt :=
     , .bool false
     ]
 
+/-! ## Outbound session registry.
+
+The server tracks every outbound session it has *initiated* (currently
+only via the sturdyref enlivener) so that an inbound
+`op:start-session` from the same remote peer can be recognised as a
+crossed-hellos race and resolved per the spec.
+
+The key is the `(transport, address)` pair extracted from the remote
+`<ocapn-peer …>` record — that's what uniquely identifies a peer in
+OCapN. The value carries the per-session pubkey we sent (needed to
+compute our side's Public Identifier) and the open `FramedConn` so
+the dispatcher can send `op:abort` on the right wire if our outbound
+turns out to be the loser of a race.
+-/
+
+/-- A peer's identity for crossed-hellos matching: `(transport, address)`. -/
+abbrev PeerKey := List UInt8 × List UInt8
+
+/-- A still-open outbound session: the keypair we used to sign the
+outbound `op:start-session`, the `FramedConn` we wrote it on, and an
+abort flag set when crossed-hellos resolution kills it. -/
+structure PendingOutbound where
+  ourPubkey : ByteArray
+  conn      : FramedConn
+  aborted   : IO.Ref Bool
+
+/-- Server-wide map of `PeerKey → PendingOutbound`. -/
+abbrev OutboundRegistry := IO.Ref (List (PeerKey × PendingOutbound))
+
+namespace OutboundRegistry
+
+def create : IO OutboundRegistry := IO.mkRef []
+
+def add (r : OutboundRegistry) (k : PeerKey) (v : PendingOutbound) : IO Unit :=
+  r.modify ((k, v) :: ·)
+
+def lookup (r : OutboundRegistry) (k : PeerKey) : IO (Option PendingOutbound) := do
+  let xs ← r.get
+  return (xs.find? (·.1 = k)).map (·.2)
+
+def remove (r : OutboundRegistry) (k : PeerKey) : IO Unit :=
+  r.modify (·.filter (·.1 ≠ k))
+
+end OutboundRegistry
+
 /-! ## Per-session handler type and state.
 
 `SessionHandler` is what an export-position is bound to: it receives
@@ -157,20 +210,25 @@ structure State where
   position `i + 1`; position 0 is reserved for the bootstrap fetch
   handler and is not stored here. -/
   exports       : IO.Ref (Array SessionHandler)
+  /-- Server-wide outbound registry, shared across all sessions on
+  this server. Read by the inbound handshake to spot crossed hellos;
+  written by `runOutboundSession` (kicked off from the enlivener). -/
+  outboundReg   : OutboundRegistry
 
 namespace State
 
 /-- Fresh session state for a new inbound connection. A new Ed25519
 keypair is generated per connection (matching the spec's "per-session
 keypair" rule). -/
-def create (ourLocation : ValueExt) (registry : Registry) : IO State := do
+def create (ourLocation : ValueExt) (registry : Registry)
+    (outboundReg : OutboundRegistry) : IO State := do
   let handshakeDone ← IO.mkRef false
   let aborted       ← IO.mkRef false
   let (pk, sk)      ← Crypto.ed25519Keypair
   let exports       ← IO.mkRef (#[] : Array SessionHandler)
   pure { handshakeDone, aborted, ourLocation,
          sessionPubkey := pk, sessionSecret := sk,
-         registry, exports }
+         registry, exports, outboundReg }
 
 /-- Allocate a fresh export position bound to `h`. Returns the wire
 position (1-indexed). -/
@@ -312,61 +370,141 @@ partial def lookupHintBytes : List ValueExt → List UInt8 → Option (List UInt
       else lookupHintBytes rest key
   | _, _ => none
 
+/-- A peer record's address field is either a `str` or a `sym` —
+extract the underlying bytes. -/
+def peerAddrBytes : ValueExt → Option (List UInt8)
+  | .str bs => some bs
+  | .sym bs => some bs
+  | _       => none
+
+/-- Pull `(transport, address)` out of an `<ocapn-peer transport
+address hints>` record — the canonical peer identity for
+crossed-hellos matching. -/
+def extractPeerKey (v : ValueExt) : Option PeerKey :=
+  match v with
+  | .record (.sym lbl) (.sym transport :: addr :: _) =>
+      if lbl ≠ peerSym then none
+      else (peerAddrBytes addr).map (fun a => (transport, a))
+  | _ => none
+
 /-- Parse an `<ocapn-sturdyref <ocapn-peer 'tcp-testing-only ADDR HINTS> SWISS>`
-into a `(SocketAddress, swiss-bytes)` pair. Only `tcp-testing-only`
+into `(SocketAddress, PeerKey, swiss-bytes)`. Only `tcp-testing-only`
 is supported here. -/
-def parseSturdyref (v : ValueExt) : Option (SocketAddress × List UInt8) :=
+def parseSturdyref (v : ValueExt) :
+    Option (SocketAddress × PeerKey × List UInt8) :=
   match v with
   | .record (.sym sLbl)
-      [ .record (.sym pLbl) [.sym transport, _addr, hintsVal]
+      [ .record (.sym pLbl) [.sym transport, addr, hintsVal]
       , .bytes swiss
       ] =>
     if sLbl ≠ sturdyrefSym then none
     else if pLbl ≠ peerSym then none
     else if transport ≠ tcpTestingOnlySym then none
     else
-      let entries : Option (List ValueExt) :=
-        match hintsVal with
-        | .dict es => some es
-        | .list es => some es
-        | _        => none
-      match entries with
+      match peerAddrBytes addr with
       | none => none
-      | some es =>
-        match lookupHintBytes es "host".toUTF8.toList,
-              lookupHintBytes es "port".toUTF8.toList with
-        | some hostBs, some portBs =>
-          match parseIPv4 hostBs, parseAsciiNat portBs with
-          | some ip, some n =>
-            if n < 65536 then
-              some ({ addr := ip, port := n.toUInt16 } |> SocketAddress.v4, swiss)
-            else none
+      | some addrBs =>
+        let entries : Option (List ValueExt) :=
+          match hintsVal with
+          | .dict es => some es
+          | .list es => some es
+          | _        => none
+        match entries with
+        | none => none
+        | some es =>
+          match lookupHintBytes es "host".toUTF8.toList,
+                lookupHintBytes es "port".toUTF8.toList with
+          | some hostBs, some portBs =>
+            match parseIPv4 hostBs, parseAsciiNat portBs with
+            | some ip, some n =>
+              if n < 65536 then
+                some ({ addr := ip, port := n.toUInt16 } |> SocketAddress.v4,
+                      (transport, addrBs), swiss)
+              else none
+            | _, _ => none
           | _, _ => none
-        | _, _ => none
   | _ => none
+
+/-! ## Public Identifier (spec §"Public Identifier").
+
+The Public Identifier of a peer is `SHA-256(SHA-256(syrup(pubkey-record)))`
+where `pubkey-record` is the gcrypt-shaped `(public-key (ecc …))` value.
+We compare bytewise to resolve crossed hellos. -/
+
+/-- Public Identifier of a peer given its on-wire pubkey record. -/
+def publicIdentifier (pubkeyRec : ValueExt) : ByteArray :=
+  Crypto.sha256d (listToBa (Encode.encodeExt pubkeyRec))
+
+/-- Bytewise comparison of two `ByteArray`s — returns `.lt`/`.eq`/`.gt`.
+Used to pick the loser of a crossed-hellos race. -/
+def byteArrayCmp (a b : ByteArray) : Ordering :=
+  let rec go (i : Nat) : Ordering :=
+    if i ≥ a.size && i ≥ b.size then .eq
+    else if i ≥ a.size then .lt
+    else if i ≥ b.size then .gt
+    else
+      let av := a.get! i
+      let bv := b.get! i
+      if av < bv then .lt
+      else if av > bv then .gt
+      else go (i + 1)
+    termination_by (a.size + b.size + 1 - i)
+    decreasing_by
+      simp_wf
+      omega
+  go 0
 
 /-! ## Outbound op:start-session.
 
 When the enlivener gets a sturdyref it can resolve, it spawns one of
-these. We do a *one-shot* outbound handshake — connect, send a
-freshly-signed `op:start-session`, and detach. The receiving side's
-state machine takes over from there (the crossed-hellos tests handle
-the rest). -/
+these. The runtime:
 
-/-- Open a TCP connection to `addr`, generate a per-session keypair,
-sign our `ourLocation`, and write a valid `op:start-session` frame.
-Does **not** wait for or close the connection — we leave it for the
-peer to drive or shut down. -/
-def outboundStartSession (addr : SocketAddress) (ourLocation : ValueExt) :
+  1. Open a TCP socket to the peer's hinted address.
+  2. Generate a per-session Ed25519 keypair, sign our location, and
+     write the outbound `op:start-session`.
+  3. Register the open connection in the server's `OutboundRegistry`
+     keyed by the peer's `(transport, address)` so the inbound
+     handshake can spot a crossed-hellos race.
+  4. Read frames from the peer until EOF or until we observe the
+     `aborted` flag flipped by a crossed-hellos resolution. -/
+
+partial def outboundReadLoop (conn : FramedConn) (pending : PendingOutbound) :
     IO Unit := do
+  if ← pending.aborted.get then return ()
+  match ← conn.readFrame with
+  | none =>
+    IO.eprintln "[session][outbound] EOF, closing"
+    return ()
+  | some f =>
+    IO.eprintln s!"[session][outbound] received frame; continuing"
+    -- Log only; we don't model the post-handshake outbound behaviour
+    -- here. Concrete cases of interest:
+    --   * `<op:start-session …>`     — peer's reply, OK
+    --   * `<op:abort "Crossed …">`   — peer aborted us, drop the conn
+    let _ := f
+    outboundReadLoop conn pending
+
+/-- Open a TCP connection to `addr`, perform the outbound handshake,
+register the connection in `reg`, and drive the read loop until the
+peer closes or we get aborted. -/
+def runOutboundSession (addr : SocketAddress) (peerKey : PeerKey)
+    (ourLocation : ValueExt) (reg : OutboundRegistry) : IO Unit := do
   let net ← Netlayer.Tcp.connect addr
+  let conn ← FramedConn.of net
   let (pk, sk) ← Crypto.ed25519Keypair
+  let aborted ← IO.mkRef false
+  let pending : PendingOutbound := { ourPubkey := pk, conn, aborted }
+  reg.add peerKey pending
   let payload := locationSigningPayload ourLocation
   let sig     := Crypto.ed25519Sign sk payload
   let frame   := buildStartSessionReply (baToList pk) sig ourLocation
-  let bytes   := Encode.encodeExt frame
-  net.send (ByteArray.mk bytes.toArray)
+  conn.writeFrame frame
   IO.eprintln "[session][outbound] sent op:start-session"
+  try outboundReadLoop conn pending
+  catch e => IO.eprintln s!"[session][outbound] read loop error: {e}"
+  reg.remove peerKey
+  try conn.close
+  catch _ => pure ()
 
 /-! ## Bootstrap handlers — the ones that need session context.
 
@@ -382,11 +520,12 @@ def mkEnlivenerHandler (st : State) : SessionHandler := fun args => do
   match args with
   | [sref] =>
     match parseSturdyref sref with
-    | some (addr, _swiss) =>
+    | some (addr, peerKey, _swiss) =>
       let loc := st.ourLocation
+      let reg := st.outboundReg
       let _ ← IO.asTask (prio := .dedicated) do
         try
-          outboundStartSession addr loc
+          runOutboundSession addr peerKey loc reg
         catch e =>
           IO.eprintln s!"[session][enlivener] outbound failed: {e}"
       return none
@@ -484,12 +623,44 @@ def dispatch (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
         st.aborted.set true
         return some (buildAbort "invalid acceptable-location signature")
       else
-        st.handshakeDone.set true
-        let payload := locationSigningPayload st.ourLocation
-        let sig     := Crypto.ed25519Sign st.sessionSecret payload
-        let reply   := buildStartSessionReply (baToList st.sessionPubkey) sig st.ourLocation
-        IO.eprintln s!"[session] handshake OK, replying with signed op:start-session"
-        return some reply
+        -- Crossed-hellos check: if we have an outbound session pending
+        -- to this same peer, compare Public Identifiers and abort the
+        -- lower one (spec §"Crossed Hellos Resolution").
+        let crossedResult : Option (Option ValueExt) ←
+          match extractPeerKey clientLoc with
+          | none => pure none
+          | some peerKey =>
+            match ← st.outboundReg.lookup peerKey with
+            | none => pure none
+            | some pending =>
+              let ourOutPk  := buildSessionPubkey (baToList pending.ourPubkey)
+              let ourPubid  := publicIdentifier ourOutPk
+              let theirPubid := publicIdentifier clientPk
+              match byteArrayCmp ourPubid theirPubid with
+              | .lt =>
+                IO.eprintln "[session] crossed-hellos: outbound loses, aborting outbound"
+                pending.aborted.set true
+                try pending.conn.writeFrame (buildAbort "Crossed hellos mitigated")
+                catch _ => pure ()
+                st.outboundReg.remove peerKey
+                pure (some none)  -- accept inbound; signal "no early return"
+              | .gt =>
+                IO.eprintln "[session] crossed-hellos: inbound loses, aborting inbound"
+                st.aborted.set true
+                pure (some (some (buildAbort "Crossed hellos mitigated")))
+              | .eq =>
+                IO.eprintln "[session] crossed-hellos: identical pubids; aborting inbound"
+                st.aborted.set true
+                pure (some (some (buildAbort "Crossed hellos mitigated")))
+        match crossedResult with
+        | some (some abortFrame) => return some abortFrame
+        | _ =>
+          st.handshakeDone.set true
+          let payload := locationSigningPayload st.ourLocation
+          let sig     := Crypto.ed25519Sign st.sessionSecret payload
+          let reply   := buildStartSessionReply (baToList st.sessionPubkey) sig st.ourLocation
+          IO.eprintln s!"[session] handshake OK, replying with signed op:start-session"
+          return some reply
     | none =>
       IO.eprintln s!"[session] first frame is not op:start-session; aborting"
       st.aborted.set true
@@ -499,9 +670,9 @@ def dispatch (st : State) (frame : ValueExt) : IO (Option ValueExt) := do
   dispatchOpDeliver st frame
 
 /-- Run a session: build state, dispatch frames in a loop. -/
-def run (conn : FramedConn) (registry : Registry) (ourLocation : ValueExt) :
-    IO Unit := do
-  let st ← State.create ourLocation registry
+def run (conn : FramedConn) (registry : Registry) (ourLocation : ValueExt)
+    (outboundReg : OutboundRegistry) : IO Unit := do
+  let st ← State.create ourLocation registry outboundReg
   runHandler conn (dispatch st)
 
 end OcapnLean.Captp.Session

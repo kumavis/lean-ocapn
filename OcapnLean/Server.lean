@@ -46,18 +46,21 @@ def ourLocation (_port : UInt16) : ValueExt :=
     ]
 
 /-- Accept-forever loop. Each connection is handed to a dedicated
-task; the main task immediately returns to accepting the next one. -/
+task; the main task immediately returns to accepting the next one.
+The `outboundReg` is shared by every session this server starts so
+the inbound handshake can detect a crossed-hellos race against any of
+our pending outbound sessions. -/
 partial def acceptLoop
     (acceptOne : IO Netlayer) (registry : Bootstrap.Registry)
-    (loc : ValueExt) : IO Unit := do
+    (loc : ValueExt) (outboundReg : Session.OutboundRegistry) : IO Unit := do
   let net ← acceptOne
   let _ ← IO.asTask (prio := .dedicated) do
     try
       let conn ← FramedConn.of net
-      Session.run conn registry loc
+      Session.run conn registry loc outboundReg
     catch e =>
       IO.eprintln s!"[server] connection error: {e}"
-  acceptLoop acceptOne registry loc
+  acceptLoop acceptOne registry loc outboundReg
 
 def main (args : List String) : IO Unit := do
   let port := parsePort args
@@ -66,4 +69,5 @@ def main (args : List String) : IO Unit := do
   let acceptOne ← Tcp.listen addr 32
   let registry := Bootstrap.defaultRegistry
   let loc := ourLocation port
-  acceptLoop acceptOne registry loc
+  let outboundReg ← Session.OutboundRegistry.create
+  acceptLoop acceptOne registry loc outboundReg

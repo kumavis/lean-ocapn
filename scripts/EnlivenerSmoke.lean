@@ -126,10 +126,11 @@ def main : IO Unit := do
 
   -- Spin up primary server.
   let primaryAccept ← Tcp.listen primaryAddr
+  let primaryOutboundReg ← Session.OutboundRegistry.create
   let _primaryTask ← IO.asTask (prio := .dedicated) do
     let net ← primaryAccept
     let conn ← FramedConn.of net
-    Captp.Session.run conn Bootstrap.defaultRegistry primaryLoc
+    Captp.Session.run conn Bootstrap.defaultRegistry primaryLoc primaryOutboundReg
 
   -- Spin up "other" server with an okRef.
   let okRef ← IO.mkRef false
