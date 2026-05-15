@@ -91,6 +91,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Threeparty,
     `OcapnLean.Captp.Impl,
     `OcapnLean.Captp.Refinement,
+    `OcapnLean.Captp.RefinementExtended,
     `OcapnLean.Captp.Run,
     `OcapnLean.Captp.Bootstrap,
     `OcapnLean.Captp.Session,
