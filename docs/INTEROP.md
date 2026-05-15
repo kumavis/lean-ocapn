@@ -61,15 +61,55 @@ nix-shell -p nodejs --command "\
 Then the Python suite is run the same way, pointing at
 `ocapn://<addr>.tcp-testing-only?host=127.0.0.1&port=22046`.
 
+## Lean client → external server
+
+The Lean-side client driver in `OcapnLean.Captp.Client` can also
+*drive* any OCapN peer; see `scripts/ClientVsExternal.lean` /
+`lake exe client-vs-external -- --port N`. Verified end-to-end:
+
+| Server | Wire | Result |
+|---|---|---|
+| ocapn-lean (self)   | TCP | echo round-trip OK |
+| @endo/ocapn         | TCP | echo round-trip OK |
+| ocapn-lean (self)   | UDS | echo round-trip OK (`lake exe uds-smoke`) |
+
+## Goblins (testuds)
+
+We added a UDS netlayer (`OcapnLean.Netlayer.Uds` + `c/uds.c`)
+specifically to interop with Guile-Goblins's
+[`testuds`](goblins/goblins/ocapn/netlayer/testuds.scm) transport,
+the simplest local-only netlayer Goblins ships with.
+
+The Goblins side runs via `scripts/goblins-testuds-server.scm`:
+
+    nix-shell -p guile guile-goblins guile-fibers --command \
+      "guile scripts/goblins-testuds-server.scm"
+
+That listens on `/tmp/ocapn-lean-uds/goblins.sock`. The Lean side
+binary `lake exe client-vs-uds -- --sock <path> --version
+goblins-0.16` connects, sends `op:start-session`, and awaits the
+peer's reply.
+
+**Status:** Lean self-host over UDS passes. Lean ↔ Goblins
+handshake hangs at the receive step. Likely cause is that Goblins's
+typed-record unmarshallers (`goblins/ocapn/captp-types.scm`)
+need the `<op:start-session>` and `<ocapn-peer>` records to be
+emitted with Goblins-specific marshalling tags rather than the
+plain symbol-labelled records the spec defines. The on-wire bytes
+look identical to a naked-spec reader (Python, @endo/ocapn, our own
+impl), but Goblins's reader filters by marshaller association. A
+follow-up commit would either:
+
+  * teach our wire builder to emit goblins-compatible record tags,
+    *or*
+  * patch the goblins side to also accept naked spec records.
+
 ## Notes
 
-* `tests.op_abort` runs in ~0.005s against Endo but takes ~60s
-  against ocapn-lean. Both pass the assertion, but ocapn-lean's path
-  leaves the TCP connection open after marking the session aborted
-  (the Python client then times out reading rather than getting a
-  clean connection close). A future commit can teach
-  `Captp.Session` to close the socket once the aborted flag flips —
-  cosmetic for the test but spec-aligned.
+* `tests.op_abort` was previously 60s under ocapn-lean (we left the
+  TCP socket open after setting `aborted`) and 5ms under Endo. Fixed
+  in commit `1b18c60` by closing the socket alongside the flag flip;
+  now matches Endo's behaviour.
 
 * Some test modules require both peers to keep state across multiple
   TCP connections from the same peer (the handoff exporter & gifter

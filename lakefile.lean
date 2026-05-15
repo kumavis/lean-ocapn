@@ -172,3 +172,13 @@ lean_exe «uds-smoke» where
   root := `scripts.UdsSmoke
   srcDir := "."
   moreLinkArgs := sodiumLinkArgs
+
+lean_exe «client-vs-uds» where
+  root := `scripts.ClientVsUds
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs
+
+lean_exe «uds-probe» where
+  root := `scripts.UdsProbe
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs

@@ -35,12 +35,16 @@ open Std.Net
 
 /-- One end of a client-side CapTP session. Holds the framed
 connection, the per-session keypair, and small monotonically-
-incrementing counters for the import / answer slots we hand out. -/
+incrementing counters for the import / answer slots we hand out.
+The `captpVersion` field defaults to `"1.0"` (the version
+ocapn-lean and @endo/ocapn speak); set it to e.g.
+`"goblins-0.16"` when driving a Goblins peer. -/
 structure Session where
   conn          : FramedConn
   ourLocation   : ValueExt
   ourPubkey     : ByteArray
   ourSecret     : ByteArray
+  captpVersion  : String := "1.0"
   peerPubkey    : IO.Ref (Option ValueExt)
   nextImportPos : IO.Ref Nat
   nextAnswerPos : IO.Ref Nat
@@ -49,12 +53,16 @@ namespace Session
 
 /-- Open a TCP connection to `addr`, generate a fresh keypair, and
 return a `Session` with all counters initialised. The handshake is
-*not* run yet — call `handshake` next. -/
-def connect (addr : SocketAddress) (ourLocation : ValueExt) : IO Session := do
+*not* run yet — call `handshake` next. Optional `captpVersion`
+overrides the default `"1.0"` (use e.g. `"goblins-0.16"` for a
+Goblins peer). -/
+def connect (addr : SocketAddress) (ourLocation : ValueExt)
+    (captpVersion : String := "1.0") : IO Session := do
   let net ← Netlayer.Tcp.connect addr
   let conn ← FramedConn.of net
   let (pk, sk) ← Crypto.ed25519Keypair
   pure { conn, ourLocation, ourPubkey := pk, ourSecret := sk,
+         captpVersion,
          peerPubkey := ← IO.mkRef none,
          nextImportPos := ← IO.mkRef 0,
          nextAnswerPos := ← IO.mkRef 0 }
@@ -75,16 +83,22 @@ end Session
 
 /-! ## Handshake. -/
 
-/-- Build a signed `op:start-session` for *us* to send. -/
+/-- Build a `<op:start-session>` for *us* to send, using the
+session's configured `captpVersion`. -/
 def buildOurStartSession (s : Session) : ValueExt :=
   let payload := Session.locationSigningPayload s.ourLocation
   let sig := Crypto.ed25519Sign s.ourSecret payload
-  Session.buildStartSessionReply
-    (Session.baToList s.ourPubkey) sig s.ourLocation
+  .record (.sym Session.opStartSessionSym)
+    [ .str s.captpVersion.toUTF8.toList
+    , Session.buildSessionPubkey (Session.baToList s.ourPubkey)
+    , s.ourLocation
+    , Session.buildLocationSig sig
+    ]
 
 /-- Send our `op:start-session`, read the peer's, verify their
 signature against the embedded `acceptable-location`. Stores their
-pubkey in `s.peerPubkey` on success. Throws on any failure. -/
+pubkey in `s.peerPubkey` on success. Throws on any failure. The
+peer must echo our `captpVersion`. -/
 def handshake (s : Session) : IO Unit := do
   s.conn.writeFrame (buildOurStartSession s)
   match ← s.conn.readFrame with
@@ -93,8 +107,8 @@ def handshake (s : Session) : IO Unit := do
     match Session.extractStartSession f with
     | none => throw (IO.userError "[client] peer reply not op:start-session")
     | some (ver, theirPk, theirLoc, theirSig) =>
-      if ver ≠ Session.captpVersion.toUTF8.toList then
-        throw (IO.userError s!"[client] bad captp version")
+      if ver ≠ s.captpVersion.toUTF8.toList then
+        throw (IO.userError s!"[client] captp version mismatch")
       else if ¬ Session.verifyClientLocationSig theirPk theirLoc theirSig then
         throw (IO.userError "[client] peer location signature failed")
       else
