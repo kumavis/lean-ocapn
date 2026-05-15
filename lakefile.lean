@@ -30,6 +30,10 @@ input_file cryptoShimSrc where
   path := "c" / "crypto.c"
   text := true
 
+input_file udsShimSrc where
+  path := "c" / "uds.c"
+  text := true
+
 /-- libsodium link args, used wherever the FFI shim is pulled in.
 
 The `--allow-shlib-undefined` is needed because libsodium references
@@ -46,11 +50,13 @@ def sodiumLinkArgs : Array String := #[
 /-- Build the C shim into a static archive (`libocapnLeanShim.a`).
 This is what executables and other static consumers link against. -/
 extern_lib libocapnLeanShim pkg := do
-  let oFile := pkg.buildDir / "c" / "crypto.o"
+  let cryptoO := pkg.buildDir / "c" / "crypto.o"
+  let udsO    := pkg.buildDir / "c" / "uds.o"
   let aFile := pkg.staticLibDir / nameToStaticLib "ocapnLeanShim"
-  let srcJob ← cryptoShimSrc.fetch
+  let cryptoSrcJob ← cryptoShimSrc.fetch
+  let udsSrcJob ← udsShimSrc.fetch
   let incDir ← libsodium.includeDir
-  let flags := #[
+  let cryptoFlags := #[
     "-std=c11",
     "-fPIC",
     "-O2",
@@ -58,8 +64,16 @@ extern_lib libocapnLeanShim pkg := do
     "-I", (← getLeanIncludeDir).toString,
     "-I", incDir
   ]
-  let oJob ← buildO oFile srcJob flags
-  buildStaticLib aFile #[oJob]
+  let udsFlags := #[
+    "-std=c11",
+    "-fPIC",
+    "-O2",
+    "-Wall",
+    "-I", (← getLeanIncludeDir).toString
+  ]
+  let cryptoOJob ← buildO cryptoO cryptoSrcJob cryptoFlags
+  let udsOJob ← buildO udsO udsSrcJob udsFlags
+  buildStaticLib aFile #[cryptoOJob, udsOJob]
 
 /-- FFI-only lib. -/
 @[default_target]
@@ -68,6 +82,16 @@ lean_lib OcapnLeanCrypto where
   roots := #[`OcapnLean.Crypto]
   precompileModules := true
   moreLinkArgs := sodiumLinkArgs
+
+/-- Precompiled UDS FFI lib. Same trick as OcapnLeanCrypto: the
+extern symbols live in the shared `libocapnLeanShim` static archive
+(`c/uds.c`), and `precompileModules` makes Lake link them into the
+downstream binaries. -/
+@[default_target]
+lean_lib OcapnLeanUds where
+  srcDir := "."
+  roots := #[`OcapnLean.Uds]
+  precompileModules := true
 
 /-- Main library — every `OcapnLean.*` module except `Crypto`,
 which lives in the precompiled `OcapnLeanCrypto` lib above. -/
@@ -81,6 +105,7 @@ lean_lib OcapnLean where
     `OcapnLean.Server,
     `OcapnLean.Netlayer,
     `OcapnLean.Netlayer.Tcp,
+    `OcapnLean.Netlayer.Uds,
     `OcapnLean.Syrup.Extended,
     `OcapnLean.Captp.Messages,
     `OcapnLean.Captp.Spec,
@@ -140,5 +165,10 @@ lean_exe «client-smoke» where
 
 lean_exe «client-vs-external» where
   root := `scripts.ClientVsExternal
+  srcDir := "."
+  moreLinkArgs := sodiumLinkArgs
+
+lean_exe «uds-smoke» where
+  root := `scripts.UdsSmoke
   srcDir := "."
   moreLinkArgs := sodiumLinkArgs
