@@ -37,20 +37,23 @@ real Syrup bytes from the upstream test corpus.
 **Done already:**
 - [x] `OcapnLean/Captp/Spec.lean` — Veil module with `exportNew`, `importNew`,
       `deliverWithAnswer`, `resolvePromise`, `breakPromise`, `abort`,
-      `opGet`, `opIndex`, `opUntag` actions
-- [x] **P8 bootstrap-at-zero** proved — `bootstrap_at_zero ✅` over all 9 actions
+      `opGet`, `opIndex`, `opUntag`, `opListen`, `notifyListener` actions
+- [x] **P8 bootstrap-at-zero** proved — `bootstrap_at_zero ✅` over all 11 actions
 - [x] **P2 promise monotonicity** proved — 3 sub-clauses
       (`promise_monotone_fulfilled`, `promise_monotone_broken`,
       `promise_disjoint`), all ✅ across the action set
+- [x] **`listen_notify_after_settle`** safety — a listener is only
+      notified after its target has settled. Modelled via a
+      `listening : pos → pos → Prop` subscription relation plus a
+      `listenerNotified` settled-once witness; both auto-derived
+      across all actions
 - [x] Supporting invariants: `imported_functional`, `exported_functional`,
-      `resolved_implies_slot`, `broken_implies_slot`
-- [x] 79/79 SMT theorems discharged
+      `resolved_implies_slot`, `broken_implies_slot`,
+      `listening_implies_slot`, `notified_implies_listening`,
+      `notified_implies_settled`
+- [x] 143/143 SMT theorems discharged
 
 **Remaining:**
-- [ ] Add `op:listen` action (the executable impl already has it via
-      `Captp.Session`; landing it in the Veil spec waits on modelling
-      promise-listen subscriptions, which currently sit at the impl
-      layer only)
 - [ ] P7 abort terminal (needs history tracking — punted to a later milestone)
 
 ## Milestone M3 — E2E FIFO _(done 2026-05-14, ahead of schedule)_

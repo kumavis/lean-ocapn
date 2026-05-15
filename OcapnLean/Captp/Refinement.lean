@@ -51,6 +51,8 @@ def specInitial : SpecState where
   answerSlot _    := False
   promiseResolved _ _ := False
   promiseBroken _ _ := False
+  listening _ _   := False
+  listenerNotified _ _ := False
   alive           := True
 
 /-- A spec state representing an *aborted* impl configuration. -/

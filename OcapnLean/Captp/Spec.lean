@@ -43,6 +43,15 @@ relation answerSlot : pos → Prop
 relation promiseResolved : pos → value → Prop
 -- A promise has been broken with a rejection reason.
 relation promiseBroken : pos → error → Prop
+-- `listening listener target` — the listener at import-position `listener`
+-- is subscribed to the answer-slot promise at `target`. When `target`
+-- resolves or breaks, the peer is responsible for notifying `listener`
+-- via an `op:deliver` (this notification is modelled by `notifyListener`).
+relation listening : pos → pos → Prop
+-- `listenerNotified l t` — the listener `l` has been notified about
+-- target `t`'s settled state. Used to encode "at-most-once delivery
+-- on settle" at the spec level.
+relation listenerNotified : pos → pos → Prop
 individual alive : Prop
 
 #gen_state
@@ -54,6 +63,8 @@ after_init {
   answerSlot P := False;
   promiseResolved P V := False;
   promiseBroken P E := False;
+  listening L T := False;
+  listenerNotified L T := False;
   alive := True
 }
 
@@ -143,6 +154,29 @@ action opUntag (target : pos) (newAnswer : pos) = {
   answerSlot newAnswer := True
 }
 
+-- `op:listen to-desc listener-desc want-partial?` — subscribe an
+-- import-position listener to a target answer-slot. The target must
+-- already be a tracked answer-slot promise. The `want-partial?` flag
+-- is opaque to the spec-level model. Subscriptions persist; multiple
+-- listeners may subscribe to the same target.
+action opListen (target : pos) (listener : pos) = {
+  require alive
+  require answerSlot target
+  listening listener target := True
+}
+
+-- The peer fires a notification to a listener that has been
+-- subscribed to a target now settled (resolved or broken). Models the
+-- at-most-once notification per (listener, target) pair the spec
+-- requires.
+action notifyListener (listener : pos) (target : pos) = {
+  require alive
+  require listening listener target
+  require (∃ V, promiseResolved target V) ∨ (∃ E, promiseBroken target E)
+  require ¬ listenerNotified listener target
+  listenerNotified listener target := True
+}
+
 ------------------------------------------------------------------------
 -- Safety properties
 ------------------------------------------------------------------------
@@ -166,6 +200,12 @@ safety [promise_monotone_broken]
 safety [promise_disjoint]
   promiseResolved P V → ¬ promiseBroken P E
 
+-- Safety [listen_notify_after_settle]: a listener is only notified
+-- after its target has settled (resolved or broken). Guarantees that
+-- subscribers don't see notifications on still-pending promises.
+safety [listen_notify_after_settle]
+  listenerNotified L T → ((∃ V, promiseResolved T V) ∨ (∃ E, promiseBroken T E))
+
 ------------------------------------------------------------------------
 -- Supporting invariants
 ------------------------------------------------------------------------
@@ -185,6 +225,18 @@ invariant [resolved_implies_slot]
 -- A broken promise must come from an allocated answer slot.
 invariant [broken_implies_slot]
   promiseBroken P E → answerSlot P
+
+-- A subscribed listener targets an allocated answer-slot.
+invariant [listening_implies_slot]
+  listening L T → answerSlot T
+
+-- A delivered notification corresponds to a real subscription.
+invariant [notified_implies_listening]
+  listenerNotified L T → listening L T
+
+-- A notification only fires on a settled promise (resolved or broken).
+invariant [notified_implies_settled]
+  listenerNotified L T → ((∃ V, promiseResolved T V) ∨ (∃ E, promiseBroken T E))
 
 #gen_spec
 
