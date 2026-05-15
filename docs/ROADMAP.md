@@ -175,11 +175,21 @@ proof against `Captp.Spec`.
       most important interop guarantee (byte parity at the
       Syrup layer plus correct CapTP handshake semantics).
 
-## Milestone M9 — Locator + sturdyref _(2026-09-15)_
+## Milestone M9 — Locator + sturdyref _(opened 2026-05-15)_
 
-- [ ] `OcapnLean/Locators.lean` — Locator parser/serializer
-- [ ] Sturdyref persistence and `fetch` semantics
-- [ ] Round-trip theorem for locators
+- [x] `OcapnLean/Locators.lean` — `PeerLocator` and `SturdyRef` structures
+      with Syrup-record `toValueExt` / `fromValueExt` per
+      `projects/ocapn-spec/draft-specifications/Locators.md`.
+- [x] **Round-trip theorems** for peer locator and sturdyref:
+      `fromValueExt (toValueExt p) = some p`, both proved.
+- [ ] **Deferred:** URI parser/serializer
+      (`ocapn://<designator>.<transport>[?hints]…/s/<swiss>`). Needs
+      RFC3986 escaping work; the in-band Syrup view above is what
+      the rest of the codebase exercises.
+- [ ] **Deferred:** sturdyref persistence + `fetch` semantics layer.
+      Depends on `Captp.Session` machinery already in place;
+      essentially wiring the `SturdyRef.peer` + `swiss` into an
+      outbound `op:deliver <fetch swiss>` from `Captp.Client`.
 
 ## Milestone M10 — Hardening + paper _(2026-10-13)_
 
