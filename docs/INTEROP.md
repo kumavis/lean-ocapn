@@ -210,12 +210,59 @@ handshake nevertheless still stalls; a Python probe sent a
 spec-correct, real-signed `op:start-session` over the UDS socket
 and received **zero bytes** in reply (Goblins didn't even send its
 own first `op:start-session`). Goblins doesn't crash or print
-errors; it's just silent. Likely a different bug — possibly in our
-`scripts/goblins-testuds-server.scm` wiring of `spawn-mycapn` and
-the netlayer setup, or in Goblins's `^connection-establisher` path
-when driven by a non-Goblins peer. Filed as a follow-up; needs
-patient tracing on the Goblins side with `format`-style diagnostics
-inside the captp setup actor.
+errors; it's just silent.
+
+We probed the issue with two diagnostic scripts in `/tmp` (not
+committed; they're throwaways):
+
+  * `/tmp/goblins-minimal-probe.scm` — single-vat script that
+    spawns the testuds netlayer then `spawn-mycapn` on it. The
+    netlayer spawn succeeds, but `(with-vat … (spawn-mycapn a-nl))`
+    in a **separate** `with-vat` block never returns. If
+    `(spawn-mycapn a-nl)` is run inside the **same** `with-vat`
+    block as the netlayer spawn (the pattern
+    `scripts/goblins-testuds-server.scm` uses), the body completes
+    and the outer `(wait forever)` keeps the script alive — which
+    is why our server script appears to start "ready" but then
+    never accepts a real handshake.
+
+  * `/tmp/goblins-2vat-probe.scm` — two-vat goblins↔goblins testuds
+    self-test adapted from upstream
+    `projects/goblins/examples/try-base-netlayer.scm`. Hangs at the
+    A-side `with-vat`/`spawn-mycapn` boundary, same shape as the
+    minimal probe.
+
+The cross-cutting symptom is that `(call-with-vat vat thunk)` from
+the top-level (no enclosing syscaller) does not return after the
+thunk side-effects through `spawn-mycapn`. The body executes (we
+see every diagnostic `format`), but `vat-send` never delivers the
+result back. This is consistent with a fiber-channel deadlock in
+Goblins's vat dispatcher when the spawned mycapn schedules an
+async `(on (<- netlayer-map 'data) …)` callback that wants to
+fire before the envelope's reply is sent.
+
+Possible root causes (not yet conclusive):
+
+  * Bug in Goblins's `vat-send` + `(on …)` interaction at the
+    top-of-script entry path; the REPL-driven path in
+    `try-base-netlayer.scm` works because the REPL is itself
+    running inside the fibers scheduler, which gives the vat a
+    chance to drain pending fibers between top-level `define`
+    forms.
+  * Our `scripts/goblins-testuds-server.scm` works around this
+    by accident: it never reads the result of `spawn-mycapn` (it
+    just stores it in a local `define` inside the `with-vat`),
+    so even though the vat-send reply may never come back, the
+    later `(wait forever)` keeps the vat alive and the netlayer's
+    listen loop *should* run. But evidently it doesn't —
+    incoming connections aren't being accepted.
+
+This is a Goblins-side environmental/runtime bug, not a wire-format
+disagreement, so it's not "Disagreement 4". Tracked here for the
+record; an upstream issue against
+`codeberg.org/spritely/goblins` is the right next step but I haven't
+filed it because the reproduction story is still fuzzy and depends
+on host fibers behaviour.
 
 ## Upstream follow-ups (drafts)
 
