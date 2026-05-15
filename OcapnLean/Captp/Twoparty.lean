@@ -1,5 +1,7 @@
 import Veil
 
+set_option linter.dupNamespace false
+
 /-!
 # CapTP two-peer composition — end-to-end reference FIFO
 

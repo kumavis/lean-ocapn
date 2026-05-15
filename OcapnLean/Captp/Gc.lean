@@ -1,5 +1,7 @@
 import Veil
 
+set_option linter.dupNamespace false
+
 /-!
 # Distributed garbage collection — P4 GC soundness
 

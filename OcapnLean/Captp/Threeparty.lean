@@ -1,5 +1,7 @@
 import Veil
 
+set_option linter.dupNamespace false
+
 /-!
 # Three-party handoff non-replay — P6
 

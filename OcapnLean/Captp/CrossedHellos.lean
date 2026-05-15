@@ -1,5 +1,7 @@
 import Veil
 
+set_option linter.dupNamespace false
+
 /-!
 # Crossed-hellos resolution
 

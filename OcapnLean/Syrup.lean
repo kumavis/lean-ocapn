@@ -171,7 +171,7 @@ theorem encodeNat_ne_nil (n : Nat) : encodeNat n ≠ [] := by
 /-- The first byte of `encodeNat n` is a digit (so not `'t'`, `'f'`). -/
 theorem encodeNat_head_isDigit (n : Nat) :
     ∀ b bs, encodeNat n = b :: bs → isDigit b = true :=
-  fun b bs hcons => encodeNat_all_digits n b (hcons ▸ List.mem_cons_self ..)
+  fun b _ hcons => encodeNat_all_digits n b (hcons ▸ List.mem_cons_self ..)
 
 /-- `digitsToNat` distributes over append-of-singleton. -/
 theorem digitsToNat_append_singleton (xs : List UInt8) (b : UInt8) :
@@ -307,8 +307,8 @@ theorem decode_encode : ∀ v : Value, decode (encode v) = some (v, []) := by
       show decodeAfterDigits (d :: ds_tail) (0x2d :: []) = _
       simp only [decodeAfterDigits]
       rw [← hcons, digitsToNat_encodeNat]
-      have hne : k + 1 ≠ 0 := Nat.succ_ne_zero k
-      simp [hne, Int.negSucc_eq]
+      have _hne : k + 1 ≠ 0 := Nat.succ_ne_zero k
+      simp [Int.negSucc_eq]
   | bytes bs =>
     show decode (encodeNat bs.length ++ [0x3a] ++ bs) = some (.bytes bs, [])
     -- Rearrange [0x3a] ++ bs to (0x3a :: bs).

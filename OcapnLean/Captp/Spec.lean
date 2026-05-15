@@ -1,5 +1,7 @@
 import Veil
 
+set_option linter.dupNamespace false
+
 /-!
 # CapTP single-peer abstract spec (Veil)
 
