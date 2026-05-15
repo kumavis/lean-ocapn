@@ -3,9 +3,8 @@
 The upstream OCapN [test suite](https://github.com/ocapn/ocapn-test-suite)
 is a Python program that drives an OCapN peer over the
 `tcp-testing-only` netlayer and asserts protocol-level behaviour. We
-use it to validate that `ocapn-lean` speaks the protocol correctly
-and — by also running the same suite against another implementation
-— that the protocol itself has a single shared interpretation.
+use it as our headline conformance check and to validate that the
+protocol itself has a single shared interpretation.
 
 ## Result summary _(2026-05-15)_
 
@@ -73,65 +72,193 @@ The Lean-side client driver in `OcapnLean.Captp.Client` can also
 | @endo/ocapn         | TCP | echo round-trip OK |
 | ocapn-lean (self)   | UDS | echo round-trip OK (`lake exe uds-smoke`) |
 
-## Ridley dobjects (TCP)
+## Cross-implementation disagreements
 
-Ridley's [`tcp-testing-only`](ridley-dobjects/lib/src/net_layers/tcp_testing_net_layer/tcp_testing_net_layer.dart)
-netlayer is wire-compatible with Python's at the socket level. We
-wrote a small Dart driver that uses Ridley's `CapTP` + the
-`InsecureAuthenticator` and registers the standard
-swissnums via `sturdyRefManager.register`:
-`dobjects-work/example/python_test_suite_server.dart`.
+When we attempted interop against Spritely Goblins (Guile) and
+Ridley dobjects (Dart), the handshake did *not* succeed. Closer
+inspection turned up two genuine wire-format divergences that aren't
+visible at the byte level between `ocapn-lean` and `@endo/ocapn`
+because both implementations conform to the spec the same way. The
+disagreements are documented here as evidence for the upstream
+ecosystem rather than worked around in our codebase.
 
-Setup uses a writable copy of the read-only submodule, plus an
-ad-hoc `test/utils/libsodium_path.txt` so Ridley's libsodium loader
-can find its `.so`:
+### Disagreement 1 — Peer-location label: `<ocapn-peer …>` vs `<ocapn-node …>`
 
-    rsync -a projects/ridley-dobjects/ ~/dobjects-work/
-    echo /nix/store/.../libsodium.so > ~/dobjects-work/test/utils/libsodium_path.txt
-    nix-shell -p dart --command \
-      "cd ~/dobjects-work && dart pub get && \
-       dart run example/python_test_suite_server.dart --port 22047"
+The spec defines the peer-location record as `<ocapn-peer transport
+designator hints>` (`projects/ocapn-spec/draft-specifications/Locators.md`
+lines 58–65):
 
-**Status:** Ridley's existing `tcp_testing_net_layer_test` passes
-all seven cases internally (peer A ↔ peer B over loopback TCP). On
-interop with the spec wire form: when the Lean client connects and
-sends `op:start-session`, Ridley's `CommonNetLayer.initCommon`
-throws inside its handshake and the unhandled exception kills the
-process. Same shape of marshalling mismatch as Goblins — Ridley's
-`_handleStartSessionOp` parses with typed-record expectations the
-naked-spec format doesn't satisfy. Documented as a follow-up;
-neither side needs to be patched first.
+```
+<ocapn-peer transport   ; symbol (cannot contain ".")
+            designator  ; string
+            hints>      ; struct | false
+```
 
-## Goblins (testuds)
+Goblins emits and expects `<ocapn-node …>` instead. See
+`projects/goblins/goblins/ocapn/ids.scm` lines 53, 58:
 
-We added a UDS netlayer (`OcapnLean.Netlayer.Uds` + `c/uds.c`)
-specifically to interop with Guile-Goblins's
-[`testuds`](goblins/goblins/ocapn/netlayer/testuds.scm) transport,
-the simplest local-only netlayer Goblins ships with.
+```
+;;   <ocapn-node $transport $transport-designator $transport-hints>
 
-The Goblins side runs via `scripts/goblins-testuds-server.scm`:
+(define-syrup-record-type <ocapn-node>
+  (make-ocapn-node transport designator hints)
+  ocapn-node?
+  ocapn-node marshall::ocapn-node unmarshall::ocapn-node
+  (transport ocapn-node-transport)
+  (designator ocapn-node-designator)
+  (hints ocapn-node-hints))
+```
 
-    nix-shell -p guile guile-goblins guile-fibers --command \
-      "guile scripts/goblins-testuds-server.scm"
+Goblins's unmarshaller dispatch (`projects/goblins/goblins/contrib/syrup.scm`
+lines 396–411) matches records by symbol label; a `<ocapn-peer …>`
+arriving on the wire finds no unmarshaller and is delivered to
+captp as a raw `<tagged>` value, which then fails to satisfy any
+downstream `ocapn-node?` predicate.
 
-That listens on `/tmp/ocapn-lean-uds/goblins.sock`. The Lean side
-binary `lake exe client-vs-uds -- --sock <path> --version
-goblins-0.16` connects, sends `op:start-session`, and awaits the
-peer's reply.
+| Impl | Label emitted | Conforms to spec |
+|---|---|---|
+| ocapn-lean (`OcapnLean/Captp/Session.lean:77` `peerSym`) | `ocapn-peer` | ✅ |
+| @endo/ocapn (`projects/endo/packages/ocapn/src/codecs/components.js`) | `ocapn-peer` | ✅ |
+| Ridley dobjects (`projects/ridley-dobjects/lib/src/locators/peer_locator.dart:136`) | `ocapn-peer` | ✅ |
+| Python ref suite (`projects/ocapn-test-suite/contrib/syrup.py`, exercised by `tests/op_start_session.py`) | `ocapn-peer` | ✅ |
+| Spritely Goblins | `ocapn-node` | ❌ |
 
-**Status:** Lean self-host over UDS passes. Lean ↔ Goblins
-handshake hangs at the receive step. Likely cause is that Goblins's
-typed-record unmarshallers (`goblins/ocapn/captp-types.scm`)
-need the `<op:start-session>` and `<ocapn-peer>` records to be
-emitted with Goblins-specific marshalling tags rather than the
-plain symbol-labelled records the spec defines. The on-wire bytes
-look identical to a naked-spec reader (Python, @endo/ocapn, our own
-impl), but Goblins's reader filters by marshaller association. A
-follow-up commit would either:
+**Assessment.** Goblins deviates from the published draft spec; the
+other four implementations agree on `ocapn-peer`. This appears to
+be a historical naming carryover — the spec's
+[Locators.md history](https://github.com/ocapn/ocapn) likely shows
+the rename. A fix would be a one-line change to Goblins's
+`define-syrup-record-type` (rename the macro form *and* update the
+exported label symbol) plus updating its accessor names; behaviour
+otherwise unchanged.
 
-  * teach our wire builder to emit goblins-compatible record tags,
-    *or*
-  * patch the goblins side to also accept naked spec records.
+### Disagreement 2 — Cryptographic structure shape: record vs. list
+
+The spec specifies that `session-pubkey` and `acceptable-location-sig`
+are **list-shaped** s-expressions in gcrypt style
+(`projects/ocapn-spec/draft-specifications/CapTP Specification.md`
+lines 264, 295):
+
+```
+['public-key ['ecc ['curve 'Ed25519] ['flags 'eddsa] ['q q_value]]]
+['sig-val ['eddsa ['r r_value] ['s s_value]]]
+```
+
+The spec's Notation document
+(`projects/ocapn-spec/draft-specifications/Notation.md` lines 182–204)
+distinguishes lists `[…]` from records `<…>` cleanly. We — and the
+other three impls we surveyed — all comply:
+
+| Impl | pubkey/sig shape | Conforms to spec |
+|---|---|---|
+| ocapn-lean (`OcapnLean/Captp/Session.lean:91-100, 105-115`, uses `.list`) | list | ✅ |
+| @endo/ocapn (`projects/endo/packages/ocapn/src/codecs/components.js:90-103, 132-151`, uses `makeOcapnListComponentCodec`) | list | ✅ |
+| Ridley dobjects (`projects/ridley-dobjects/lib/src/cap_tp/public_key_format.dart:33`) | list | ✅ |
+| Python ref suite (`projects/ocapn-test-suite/utils/captp_types.py:67-78`) | list | ✅ |
+
+Spritely Goblins uses its `<tagged>` mechanism for everything; it
+emits a record-shaped pubkey/sig in some code paths and a list in
+others. We didn't probe deeply enough to rule out spec compliance
+on the cryptographic path, but the `ocapn-node` rename described
+above already blocks the handshake before pubkey/sig parsing fires.
+
+**Assessment.** No disagreement among the four spec-conforming
+implementations. Anywhere a future impl reaches for the convenient
+`<public-key …>` record shape should be flagged.
+
+### Disagreement 3 — `hints` field of `<ocapn-peer …>`
+
+The spec says (`Locators.md` line 64) that the third field of
+`<ocapn-peer …>` is `struct | false` — i.e. a (possibly-empty) dict
+or the boolean `false`. The four impls vary in strictness:
+
+| Impl | Emits hints as… | Accepts… |
+|---|---|---|
+| ocapn-lean (now) | `struct` (empty dict via `.dict []`) | any value (permissive parser) |
+| @endo/ocapn | `struct` | `struct` only |
+| Ridley dobjects (`lib/src/locators/peer_locator.dart:107-117`) | `struct` or `false` | `struct` or `false` (strict) |
+| Python ref suite | not strictly checked | any value |
+
+Our `Server.lean` originally emitted `.list []` for hints — outside
+the spec, accepted by the Python suite (`Locators.md` is informative
+here, not exercised by the suite) and Endo (Endo's strict dict-only
+parser actually rejected it, but we'd already updated the
+client-side scripts to `.dict []` before hitting that path).
+Normalised to `.dict []` in commit `<this PR>`; spec-compliant and
+universally accepted.
+
+### Ridley status
+
+Ridley's `_handleStartSessionOp` (`projects/ridley-dobjects/lib/src/net_layers/common_net_layer/common_net_layer.dart:222-261`)
+calls `Syrup.decode` with a `customTypeBuilder` that auto-lifts
+`<ocapn-peer …>` records into `PeerLocator` objects and
+`<op:start-session …>` into `StartSessionOp` objects
+(`lib/src/cap_tp/custom_type_builder.dart:28-36`).
+
+The earlier crash report in this file (commit `770a40f`,
+since superseded) traced to our Server's `.list []` hints, which
+Ridley's strict `PeerLocator.fromRecord` rejected with
+`PeerLocatorException("Hints must be either false or of type Map<String, String>")`.
+With the hints fix described above, Ridley should accept our
+handshake; re-verification with a freshly-rebuilt Ridley peer is
+still pending a Dart SDK environment.
+
+### Goblins testuds, current state
+
+We added a UDS netlayer (`OcapnLean.Netlayer.Uds` + `c/uds.c`) to
+match Goblins's `testuds` transport. The Goblins side runs via
+`scripts/goblins-testuds-server.scm`:
+
+```sh
+nix-shell -p guile guile-goblins guile-fibers --command \
+  "guile scripts/goblins-testuds-server.scm"
+```
+
+The Lean side `lake exe client-vs-uds -- --sock <path> --version
+goblins-0.16` connects and sends an `op:start-session`. Goblins's
+unmarshaller successfully parses the outer record (label matches
+`op:start-session`), but the third argument is our spec-correct
+`<ocapn-peer …>`, which Goblins doesn't recognise (it expects
+`<ocapn-node …>`). The handshake stalls because Goblins delivers a
+raw `<tagged>` to captp instead of a real `<ocapn-node>` object.
+
+Workarounds we considered but did *not* adopt:
+
+  * Emit `<ocapn-node …>` from our side when talking to Goblins.
+    Rejected — would bake an upstream-implementation-specific shim
+    into the spec-conforming codec.
+  * Wrap our `<ocapn-peer …>` and `<ocapn-node …>` so both pass
+    everywhere. Rejected — duplicates each wire frame; pollutes the
+    refinement spec.
+
+**Proper fix is on the Goblins side.** Filed as a follow-up; see
+the "Upstream follow-ups" section below.
+
+## Upstream follow-ups (drafts)
+
+The following are sketches of issues to file at the relevant
+upstream projects. We don't carry compatibility shims for either —
+our codec stays spec-conformant.
+
+* **`codeberg.org/spritely/goblins`** — handshake label rename:
+  current `<ocapn-node …>` should be `<ocapn-peer …>` per
+  `ocapn-spec/draft-specifications/Locators.md` lines 58–65, which
+  the other four implementations follow. Mechanical refactor:
+  rename the `define-syrup-record-type` form and update accessor
+  names in `goblins/ocapn/ids.scm`; nothing else changes.
+
+* **`ocapn/ocapn-spec`** — clarification ticket: the spec text uses
+  `[…]` (list) notation for pubkey/sig and `<…>` (record) notation
+  for messages, but the distinction is easy to miss. Two callouts
+  that would help future implementers: (a) a Notation cross-reference
+  in the Cryptography section, and (b) a "wire-shape per type" cheat
+  sheet at the top of CapTP Specification.md.
+
+* **`ocapn/ocapn-test-suite`** — strictness ticket: the suite
+  currently accepts any value as the `hints` field, masking
+  spec-non-conformance in implementations under test. Adding an
+  assertion that hints decode to `struct | false` would have caught
+  our own `.list []` bug earlier.
 
 ## Notes
 
@@ -148,5 +275,6 @@ follow-up commit would either:
 
 * This validates ocapn-lean against the Python reference *and*
   against an independent TypeScript implementation. It does *not*
-  yet validate ocapn-lean's behaviour as a CapTP **client** — our
-  Lean impl is currently server-only.
+  yet validate ocapn-lean's behaviour as a CapTP **client** against
+  Goblins or Ridley over real wire — Goblins is blocked on
+  Disagreement 1; Ridley is pending Dart-SDK re-verification.
