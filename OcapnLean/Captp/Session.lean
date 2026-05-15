@@ -1754,6 +1754,7 @@ def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
         if lbl = opAbortSym then
           IO.eprintln "[session] received op:abort before handshake; closing"
           st.aborted.set true
+          try st.conn.close catch _ => pure ()
           return []
         else
           IO.eprintln s!"[session] first frame is not op:start-session; aborting"
@@ -1773,6 +1774,7 @@ def dispatch (st : State) (frame : ValueExt) : IO (List ValueExt) := do
     else if lbl = opAbortSym then do
       IO.eprintln "[session] received op:abort; closing"
       st.aborted.set true
+      try st.conn.close catch _ => pure ()
       return []
     else do
       IO.eprintln s!"[session] unsupported op after handshake: {String.fromUTF8! ⟨lbl.toArray⟩}"
