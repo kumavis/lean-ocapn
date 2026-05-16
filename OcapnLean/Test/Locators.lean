@@ -261,4 +261,76 @@ example :
        , hints := none } : PeerLocator).toUri = none := by
   native_decide
 
+/-! ## URI parsers (`fromUri`)
+
+`fromUri` re-parses what `toUri` emits — modulo the
+`hints = none` vs `hints = some []` distinction, which the URI
+shape cannot represent (both emit no query string). -/
+
+/-- Peer with hints round-trips through the URI form. -/
+example :
+    PeerLocator.fromUri "ocapn://designator.transport?hint1=value1&hint2=value2&hint3=value3"
+    = some peerWithHints := by
+  native_decide
+
+/-- Peer with no hints round-trips, but the empty-query case is
+indistinguishable from `none` hints, so `fromUri` always yields
+`hints := some []`. -/
+example :
+    PeerLocator.fromUri "ocapn://designator.transport"
+    = some { transport := testTransport
+           , designator := testDesignator
+           , hints := some [] } := by
+  native_decide
+
+/-- Sturdyref with hints round-trips. -/
+example :
+    SturdyRef.fromUri
+      "ocapn://designator.transport/s/testSwissNum?hint1=value1&hint2=value2&hint3=value3"
+    = some srefWithHints := by
+  native_decide
+
+/-- Sturdyref without hints round-trips (same caveat as peers). -/
+example :
+    SturdyRef.fromUri "ocapn://designator.transport/s/testSwissNum"
+    = some { peer := { transport := testTransport
+                     , designator := testDesignator
+                     , hints := some [] }
+           , swiss := testSwiss } := by
+  native_decide
+
+/-- Wrong scheme is rejected. -/
+example : PeerLocator.fromUri "http://designator.transport" = none := by
+  native_decide
+
+/-- Missing `.transport` segment is rejected. -/
+example : PeerLocator.fromUri "ocapn://justadesignator" = none := by
+  native_decide
+
+/-- Sturdyref parser requires the `/s/<swiss>` segment; a peer URI
+without it gets rejected. -/
+example : SturdyRef.fromUri "ocapn://designator.transport" = none := by
+  native_decide
+
+/-! ## Base32 decoder -/
+
+/-- "abcde" decodes to a single byte. We picked a canonical
+3-byte vector to check the decoder handles partial-byte
+discards correctly: `abcdefgh` is 8 base32 chars = 40 bits = 5 bytes. -/
+example :
+    Base32.decode "abcdefgh"
+    = some [0x00, 0x44, 0x32, 0x14, 0xc7] := by
+  native_decide
+
+/-- Empty input → empty output. -/
+example : Base32.decode "" = some [] := by native_decide
+
+/-- Invalid character → `none`. (`!` not in alphabet.) -/
+example : Base32.decode "abc!" = none := by native_decide
+
+/-- Padding and dashes are tolerated (Endo's decoder strips them;
+we match for cross-impl compatibility). -/
+example : Base32.decode "abcd-efgh==" = Base32.decode "abcdefgh" := by
+  native_decide
+
 end OcapnLean.Locators.Test

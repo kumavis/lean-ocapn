@@ -25,6 +25,7 @@
 (use-modules (goblins)
              (goblins vat)
              (goblins ocapn captp)
+             (goblins ocapn ids)
              (goblins ocapn netlayer websocket)
              (goblins utils crypto)
              (fibers conditions)
@@ -65,9 +66,15 @@
 (define mycapn
   (with-vat machine-vat (spawn-mycapn netlayer)))
 
-;; Single-line machine-parseable handshake banner.
+;; Two machine-parseable banner lines:
+;;   1. designator-hex + port — what the CI Lean driver consumes.
+;;   2. uri — the canonical OCapN URI form
+;;      (`ocapn://<base32-designator>.websocket?url=ws://host:port`),
+;;      which `client-vs-guile-ws --uri ...` accepts directly.
+(define our-loc (with-vat machine-vat ($ netlayer 'our-location)))
 (format #t "goblins-ws-ready designator-hex=~a port=~a~%"
         (bv->hex designator-pubkey-bv) listen-port)
+(format #t "goblins-ws-uri uri=~a~%" (ocapn-id->string our-loc))
 (force-output)
 
 ;; Block forever — the netlayer's listen loop is alive in the vat.

@@ -124,7 +124,59 @@ URI form `ocapn://<designator>.<transport>[?k=v&…][/s/<swiss>]`.
 hint key/value bytes must all be URI-safe alphanumerics or one of
 `- _ + /`. Any byte outside that set causes `toUri` to return `none`
 (no percent-encoding). The round-trip theorem
-`PeerLocator.fromUri_toUri` covers exactly this safe subset. -/
+`PeerLocator.fromUri_toUri` covers exactly this safe subset.
+
+Also bundled: a tiny RFC 4648 base32 decoder (lowercase alphabet,
+matching what Goblins and Endo emit). The `designator` segment of
+a `ws://`-style OCapN URI is the base32-encoding of a 32-byte
+Ed25519 designator pubkey; consumers needing the raw pubkey can
+`Base32.decode p.designator` after parsing the URI. -/
+
+namespace Base32
+
+/-- RFC 4648 base32 alphabet, lowercase form
+(`abcdefghijklmnopqrstuvwxyz234567`). Matches Endo
+`websocket.js:43` and Goblins's `(goblins utils base32)`. -/
+def alphabet : String := "abcdefghijklmnopqrstuvwxyz234567"
+
+/-- Look up a single base32 character's 5-bit index. -/
+def charIndex (c : Char) : Option Nat :=
+  if 'a' ≤ c ∧ c ≤ 'z' then some (c.toNat - 'a'.toNat)
+  else if 'A' ≤ c ∧ c ≤ 'Z' then some (c.toNat - 'A'.toNat)
+  else if '2' ≤ c ∧ c ≤ '7' then some (c.toNat - '2'.toNat + 26)
+  else none
+
+/-- Decode a base32 string into bytes. Strips `=` padding and `-`
+separators (the latter to be lenient with URL-safe spellings).
+Returns `none` on any non-alphabet character. Trailing fractional
+bits are discarded — matching Endo's reference impl, which simply
+stops emitting bytes once `bits < 8`. -/
+partial def decodeGo : Nat → Nat → List UInt8 → List Char →
+    Option (List UInt8)
+  | _,   _,    out, []        => some out.reverse
+  | acc, bits, out, c :: rest =>
+    if c = '=' ∨ c = '-' then
+      decodeGo acc bits out rest
+    else
+      match charIndex c with
+      | none     => none
+      | some idx =>
+        let acc'  := acc * 32 + idx
+        let bits' := bits + 5
+        if bits' ≥ 8 then
+          let extra   := bits' - 8
+          let divisor := 2 ^ extra
+          let byte    := UInt8.ofNat (acc' / divisor)
+          decodeGo (acc' % divisor) extra (byte :: out) rest
+        else
+          decodeGo acc' bits' out rest
+
+def decode (s : String) : Option (List UInt8) :=
+  decodeGo 0 0 [] s.toList
+
+end Base32
+
+
 
 /-- An ASCII URI-safe byte: `[A-Za-z0-9_\-+/]`. Excludes the structural
 delimiters `:`, `/`, `?`, `&`, `=`, `.` used by the URI grammar.
@@ -167,6 +219,77 @@ def toUri (p : PeerLocator) : Option String := do
     let suffix ← hintsToUriSuffix p.hints
     some ("ocapn://" ++ bytesToStr p.designator ++ "."
           ++ bytesToStr p.transport ++ suffix)
+
+/-- Decode a single hex character (0-9, a-f, A-F) to a nibble. -/
+private def hexNibble? (c : Char) : Option Nat :=
+  if '0' ≤ c ∧ c ≤ '9' then some (c.toNat - '0'.toNat)
+  else if 'a' ≤ c ∧ c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
+  else if 'A' ≤ c ∧ c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
+  else none
+
+/-- RFC 3986 percent-decode a string into bytes. `%XX` triplets
+become a single byte; other chars pass through verbatim. Returns
+`none` on a malformed `%` sequence (truncated or non-hex). -/
+private partial def percentDecodeGo (out : List UInt8) :
+    List Char → Option (List UInt8)
+  | []          => some out.reverse
+  | '%' :: h1 :: h2 :: rest => do
+    let n1 ← hexNibble? h1
+    let n2 ← hexNibble? h2
+    percentDecodeGo (UInt8.ofNat (n1 * 16 + n2) :: out) rest
+  | '%' :: _    => none
+  | c :: rest   => percentDecodeGo (UInt8.ofNat c.toNat :: out) rest
+
+def percentDecode (s : String) : Option (List UInt8) :=
+  percentDecodeGo [] s.toList
+
+/-- Parse `k1=v1&k2=v2&…` (no leading `?`) into an alist. Empty
+input yields `some []`. Values are RFC 3986 percent-decoded so
+e.g. Goblins's `url=ws%3A%2F%2F127.0.0.1%3A22090` round-trips as
+`("url", "ws://127.0.0.1:22090")`. Returns `none` if any token is
+malformed (missing `=`, bad percent-escape, etc.). -/
+def parseHintsQuery (s : String) : Option (List (List UInt8 × List UInt8)) :=
+  if s.isEmpty then some []
+  else
+    let pairs := s.splitOn "&"
+    pairs.foldrM (init := []) fun pair acc => do
+      let kv := pair.splitOn "="
+      match kv with
+      | [k, v] => do
+        let kb ← percentDecode k
+        let vb ← percentDecode v
+        some ((kb, vb) :: acc)
+      | _ => none
+
+/-- Parse `ocapn://<designator>.<transport>[?k=v&…]` into a
+`PeerLocator`. The two ambiguous-but-equivalent no-hints states
+(`none` vs `some []`) both round-trip as `some []` since the URI
+shape can't distinguish them. -/
+def fromUri (uri : String) : Option PeerLocator := do
+  let scheme := "ocapn://"
+  if ¬ uri.startsWith scheme then none
+  else
+    let body := uri.drop scheme.length
+    let (path, query) :=
+      match body.splitOn "?" with
+      | [p]    => (p, "")
+      | [p, q] => (p, q)
+      | _      => (body, "")     -- fail-soft on multiple `?`
+    -- A sturdyref URI puts `/s/SWISS` after the transport. We
+    -- ignore everything from `/s/` on for the peer view.
+    let pathNoSwiss :=
+      match path.splitOn "/s/" with
+      | p :: _ => p
+      | []     => path
+    match pathNoSwiss.splitOn "." with
+    | [designator, transport] =>
+      let dbytes := designator.toUTF8.toList
+      let tbytes := transport.toUTF8.toList
+      if ¬ (allUriSafe dbytes && allUriSafe tbytes) then none
+      else
+        let hints ← parseHintsQuery query
+        some { transport := tbytes, designator := dbytes, hints := some hints }
+    | _ => none
 
 end PeerLocator
 
@@ -228,6 +351,36 @@ def toUri (s : SturdyRef) : Option String := do
     some ("ocapn://" ++ bytesToStr s.peer.designator ++ "."
           ++ bytesToStr s.peer.transport ++ "/s/"
           ++ bytesToStr s.swiss ++ suffix)
+
+/-- Parse a sturdyref URI. Same shape as
+`PeerLocator.fromUri` but requires a `/s/<swiss>` segment after
+the transport name. -/
+def fromUri (uri : String) : Option SturdyRef := do
+  let scheme := "ocapn://"
+  if ¬ uri.startsWith scheme then none
+  else
+    let body := uri.drop scheme.length
+    let (path, query) :=
+      match body.splitOn "?" with
+      | [p]    => (p, "")
+      | [p, q] => (p, q)
+      | _      => (body, "")
+    match path.splitOn "/s/" with
+    | [pathPeer, swiss] =>
+      match pathPeer.splitOn "." with
+      | [designator, transport] =>
+        let dbytes := designator.toUTF8.toList
+        let tbytes := transport.toUTF8.toList
+        let sbytes := swiss.toUTF8.toList
+        if ¬ (allUriSafe dbytes && allUriSafe tbytes && allUriSafe sbytes)
+        then none
+        else
+          let hints ← PeerLocator.parseHintsQuery query
+          let peer : PeerLocator :=
+            { transport := tbytes, designator := dbytes, hints := some hints }
+          some { peer := peer, swiss := sbytes }
+      | _ => none
+    | _ => none
 
 end SturdyRef
 

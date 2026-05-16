@@ -1,3 +1,4 @@
+import OcapnLean.Locators
 import OcapnLean.Netlayer.Ws
 
 /-!
@@ -30,7 +31,7 @@ here, just confirm the post-auth `Netlayer` round-trips one CapTP
 frame before clean close.
 -/
 
-open OcapnLean OcapnLean.Netlayer
+open OcapnLean OcapnLean.Netlayer OcapnLean.Locators
 
 def parsePort : List String → UInt16
   | []                  => 22090
@@ -41,6 +42,28 @@ def parseDesignatorHex : List String → String
   | []                             => ""
   | "--designator-hex" :: h :: _   => h
   | _ :: rest                      => parseDesignatorHex rest
+
+/-- `--uri ocapn://…` — parse a Goblins-style peer URI and derive
+both the designator-pubkey (base32 → 32 bytes) and the `url` hint
+(then split as `ws://host:port`). When given, overrides any
+`--port` / `--designator-hex` flags. -/
+def parseUri : List String → String
+  | []                  => ""
+  | "--uri" :: u :: _   => u
+  | _ :: rest           => parseUri rest
+
+/-- Strip `ws://` prefix and split `host:port`. Returns `none` on
+shape mismatch. -/
+def parseWsUrl (s : String) : Option (String × UInt16) := do
+  let scheme := "ws://"
+  if ¬ s.startsWith scheme then none
+  else
+    let body := s.drop scheme.length
+    match body.splitOn ":" with
+    | [host, portStr] =>
+      let port ← portStr.toNat?
+      some (host, port.toUInt16)
+    | _ => none
 
 /-- `--auth typed|legacy`. Default `typed` (matches Goblins ≥ v0.18
 and Endo — the typed `<init:peer-auth …>` record). `legacy` (raw
@@ -79,22 +102,53 @@ def hexToBytes (s : String) : Option ByteArray := do
     let bytes ← loop chars
     return ⟨bytes.toArray⟩
 
+/-- Derive `(host, port, designatorPub)` from either an `--uri`
+flag (parse the full OCapN URI) or the lower-level
+`--designator-hex` + `--port` pair. The URI form is what a real
+peer publishes; the explicit-flag form is what our diagnostic
+`goblins-ws-server.scm` prints. -/
+def resolveTarget (args : List String) : IO (String × UInt16 × ByteArray) := do
+  let uri := parseUri args
+  if ¬ uri.isEmpty then
+    -- URI mode.
+    let some peer := PeerLocator.fromUri uri
+      | throw (IO.userError s!"--uri: failed to parse \"{uri}\" as a PeerLocator")
+    let designatorStr := String.fromUTF8! ⟨peer.designator.toArray⟩
+    let some pubBytes := Base32.decode designatorStr
+      | throw (IO.userError s!"--uri: designator \"{designatorStr}\" is not valid base32")
+    let pub : ByteArray := ⟨pubBytes.toArray⟩
+    if pub.size ≠ 32 then
+      throw (IO.userError s!"--uri: designator decodes to {pub.size} bytes, expected 32")
+    -- Goblins encodes the bind address as a single `url=ws://host:port` hint.
+    let hints := peer.hints.getD []
+    let urlHint := hints.lookup "url".toUTF8.toList
+    let some urlBytes := urlHint
+      | throw (IO.userError "--uri: peer hints missing 'url'; not a ws-style peer?")
+    let urlStr := String.fromUTF8! ⟨urlBytes.toArray⟩
+    let some (host, port) := parseWsUrl urlStr
+      | throw (IO.userError s!"--uri: 'url' hint \"{urlStr}\" not a ws://host:port")
+    pure (host, port, pub)
+  else
+    -- Explicit-flag mode.
+    let port := parsePort args
+    let hex  := parseDesignatorHex args
+    if hex.isEmpty then
+      throw (IO.userError "missing --uri or --designator-hex (32-byte Ed25519 pubkey)")
+    let some designatorPub := hexToBytes hex
+      | throw (IO.userError s!"--designator-hex: bad hex \"{hex}\"")
+    if designatorPub.size ≠ 32 then
+      throw (IO.userError s!"--designator-hex: expected 32 bytes, got {designatorPub.size}")
+    pure ("127.0.0.1", port, designatorPub)
+
 def main (args : List String) : IO Unit := do
-  let port := parsePort args
-  let hex  := parseDesignatorHex args
+  let (host, port, designatorPub) ← resolveTarget args
   let auth ← parseAuth args
-  if hex.isEmpty then
-    throw (IO.userError "missing --designator-hex (32-byte Ed25519 pubkey as 64 hex chars)")
-  let some designatorPub := hexToBytes hex
-    | throw (IO.userError s!"--designator-hex: bad hex \"{hex}\"")
-  if designatorPub.size ≠ 32 then
-    throw (IO.userError s!"--designator-hex: expected 32 bytes, got {designatorPub.size}")
 
   let authLabel := match auth with | .legacy => "legacy" | .typed => "typed"
-  IO.println s!"[guile-ws] connecting to ws://127.0.0.1:{port}/ ({authLabel} designator-auth)"
+  IO.println s!"[guile-ws] connecting to ws://{host}:{port}/ ({authLabel} designator-auth)"
   let net ← (match auth with
-             | .legacy => Ws.Authenticated.connectLegacy "127.0.0.1" port "/" designatorPub
-             | .typed  => Ws.Authenticated.connect       "127.0.0.1" port "/" designatorPub)
+             | .legacy => Ws.Authenticated.connectLegacy host port "/" designatorPub
+             | .typed  => Ws.Authenticated.connect       host port "/" designatorPub)
   IO.println "[guile-ws] designator-auth completed"
 
   -- Send one ordinary message over the post-auth Netlayer to prove

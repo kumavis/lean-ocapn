@@ -193,16 +193,26 @@ proof against `Captp.Spec`.
       framing / version / hints deviations. Smoke test at
       `scripts/SturdyRefSmoke.lean` (`lake exe sturdyref-smoke`)
       drives the layer against a self-hosted server end-to-end.
-- [ ] **Deferred:** URI parser/serializer
-      (`ocapn://<designator>.<transport>[?hints]…/s/<swiss>`). Needs
-      RFC3986 escaping work; the in-band Syrup view above is what
-      the rest of the codebase exercises. `SturdyRef.toUri`
-      already covers the URI-safe character subset (no
-      percent-encoding); the deferred work is the parser direction
-      and the full escape table.
+- [x] **URI parser** (`PeerLocator.fromUri` / `SturdyRef.fromUri`)
+      with a tiny RFC 4648 base32 decoder for the ws-style
+      designator segment and an RFC 3986 percent-decoder for hint
+      values (Goblins emits `url=ws%3A%2F%2Fhost%3Aport`).
+      `client-vs-guile-ws --uri ocapn://…` consumes the canonical
+      URI form a Goblins peer publishes — driver no longer needs
+      `--port` / `--designator-hex` as separate flags. Verified
+      live against Goblins v0.17 + v0.18 (`scripts/diagnostics/goblins-ws-server.scm`
+      now emits a `goblins-ws-uri uri=…` banner line via
+      `ocapn-id->string`). Round-trip tests in
+      `OcapnLean.Test.Locators` plus rejection-path tests.
+- [ ] **Deferred:** percent-encoder for `toUri` (currently we
+      bail out with `none` on any non-URI-safe byte rather than
+      emitting `%XX`). Symmetric to the percent-decoder we now
+      have on the parser side; would let `toUri ∘ fromUri = id`
+      hold for arbitrary byte values, not just the URI-safe subset.
 - [ ] **Deferred:** sturdyref persistence (on-disk store, with
       key-rotation policy). Orthogonal to the `fetch` layer above
-      (which just consumes an in-memory `SturdyRef`).
+      (which just consumes an in-memory `SturdyRef`). Skipped per
+      project decision — not a near-term need.
 
 ## Milestone M10 — Hardening + paper _(2026-10-13)_
 
