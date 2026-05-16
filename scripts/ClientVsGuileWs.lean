@@ -42,18 +42,19 @@ def parseDesignatorHex : List String → String
   | "--designator-hex" :: h :: _   => h
   | _ :: rest                      => parseDesignatorHex rest
 
-/-- `--auth legacy|typed`. Default `legacy` because that's what
-nixpkgs's current guile-goblins (v0.17.0) speaks. Endo and Goblins
-≥ v0.18 use `typed` (the `<init:peer-auth …>` record). -/
-inductive AuthMode where | legacy | typed
+/-- `--auth typed|legacy`. Default `typed` (matches Goblins ≥ v0.18
+and Endo — the typed `<init:peer-auth …>` record). `legacy` (raw
+64-byte challenge, syrup-encoded `<sig-val …>` reply) is needed
+for Goblins ≤ v0.17, which is what nixpkgs currently ships. -/
+inductive AuthMode where | typed | legacy
 deriving Repr
 
 def parseAuth : List String → IO AuthMode
-  | []                          => pure .legacy
-  | "--auth" :: "legacy" :: _   => pure .legacy
+  | []                          => pure .typed
   | "--auth" :: "typed"  :: _   => pure .typed
+  | "--auth" :: "legacy" :: _   => pure .legacy
   | "--auth" :: other :: _      =>
-      throw (IO.userError s!"--auth: expected 'legacy' or 'typed', got '{other}'")
+      throw (IO.userError s!"--auth: expected 'typed' or 'legacy', got '{other}'")
   | _ :: rest                   => parseAuth rest
 
 private def hexDigit? (c : Char) : Option UInt8 :=

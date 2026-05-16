@@ -110,7 +110,7 @@ which matches the other four implementations and the spec:
 | @endo/ocapn (`projects/endo/packages/ocapn/src/codecs/components.js`) | `ocapn-peer` | ✅ |
 | Ridley dobjects (`projects/ridley-dobjects/lib/src/locators/peer_locator.dart:136`) | `ocapn-peer` | ✅ |
 | Python ref suite (`projects/ocapn-test-suite/contrib/syrup.py`, exercised by `tests/op_start_session.py`) | `ocapn-peer` | ✅ |
-| Spritely Goblins ≥ v0.16.1 (`projects/goblins/goblins/ocapn/ids.scm:77`) | `ocapn-peer` (`<ocapn-node>` kept as deprecated alias at line 54) | ✅ |
+| Spritely Goblins ≥ v0.16.1 (`projects/goblins/goblins/ocapn/ids.scm:76`) | `ocapn-peer` (`<ocapn-node>` kept as deprecated alias at line 54) | ✅ |
 
 The five-way agreement on this label means the original Disagreement 1
 report (against gitlab's older `guile-goblins`, pinned to commit
@@ -290,6 +290,17 @@ testuds silent-handshake bug described below — WebSocket setup
 doesn't deadlock the vat dispatcher the way `^testuds-netlayer`
 does, so it works fine from a standalone Guile script.
 
+**Verified against both Goblins versions** (2026-05-16):
+- v0.17.0 (`nix-shell -p guile-goblins`, what nixpkgs ships) —
+  works with `--auth legacy`.
+- v0.18.0 (built from our submodule source via
+  `nix-shell -p autoconf automake guile-fibers guile-gcrypt
+  guile-gnutls guile-websocket … && cd projects/goblins &&
+  ./bootstrap.sh && ./configure && make && ./pre-inst-env guile
+  …`) — works with `--auth typed`. Legacy is rejected (`peer
+  closed before reply`), confirming v0.18 enforces the typed
+  shape only.
+
 **Stack on each side:**
 
 * Wire: plain TCP, then the RFC 6455 client/server handshake.
@@ -347,7 +358,32 @@ of C in `c/ws.c` (SHA-1 + base64 + HTTP upgrade + wslay glue) plus
 `Authenticated` auth dance). New build dep: `libwslay`
 (nixpkgs `wslay-1.1.1`, Ubuntu `libwslay-dev`).
 
-### Goblins testuds, current state
+### Goblins testuds, current state (2026-05-16 update)
+
+Submodule now pinned at Goblins **v0.18.0** (was v0.17.0). The
+testuds silent-handshake bug **still reproduces** in v0.18.0 —
+`scripts/diagnostics/goblins-minimal-vat-probe.scm` hangs at
+`[min] a-nl ok` exactly as it does in v0.17. Recipe:
+
+```sh
+cd projects/goblins
+nix-shell -p autoconf automake guile guile-fibers guile-gcrypt \
+  guile-gnutls guile-websocket pkg-config texinfo \
+  --command "./bootstrap.sh && ./configure && make && \
+    timeout 15 ./pre-inst-env guile --no-auto-compile \
+      ../../scripts/diagnostics/goblins-minimal-vat-probe.scm"
+# exits with 124 (timeout); output stops at "[min] a-nl ok"
+```
+
+That closes one of the two cross-validation TODOs in
+`scripts/diagnostics/UPSTREAM-GOBLINS-ISSUE.md` (the
+"test on v0.18 / main HEAD" line). The remaining TODO — porting
+upstream's REPL-driven `examples/try-base-netlayer.scm` to a
+standalone script — would distinguish "Goblins bug" from "how we
+call it"; if the upstream example also hangs standalone, file
+the issue. Original text below:
+
+
 
 We added a UDS netlayer (`OcapnLean.Netlayer.Uds` + `c/uds.c`) to
 match Goblins's `testuds` transport. The Goblins side runs via

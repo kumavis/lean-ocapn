@@ -24,6 +24,12 @@ REPL.
 
 Observed on:
 - guile-goblins 0.17.0 (and earlier — 0.16.1 has the same shape)
+- **guile-goblins 0.18.0 (built from upstream source, our submodule
+  pin)** — same hang, same point (`[min] a-nl ok` then nothing).
+  Verified 2026-05-16: built v0.18 with `nix-shell -p autoconf
+  automake guile guile-fibers guile-gcrypt guile-gnutls
+  guile-websocket pkg-config texinfo`, then ran the probe via
+  `./pre-inst-env guile --no-auto-compile …` — hangs identically.
 - guile 3.0.11
 - guile-fibers 1.3.1
 - Linux x86_64 (Nixos host)
@@ -110,8 +116,10 @@ provide those yield points.
   standalone script (the upstream is REPL-driven). If the standalone
   version hangs, file. If it works, the bug is specific to how
   `lean-ocapn` is calling.
-- [ ] Test on guile-goblins 0.18.0 / main HEAD to see if it's
-  already fixed.
+- [x] Test on guile-goblins 0.18.0 / main HEAD to see if it's
+  already fixed. **Result: still hangs identically on v0.18.0**
+  (see "Observed on" above). Bug is not fixed in the v0.18.0
+  release.
 - [ ] Try running with a small delay after `spawn-mycapn` to give the
   vat dispatcher time to drain its callback queue.
 
