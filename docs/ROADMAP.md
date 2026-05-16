@@ -99,9 +99,15 @@ round-trip.
       of authority-passing events
 - [x] **P3 (no forgery)** discharged for the direct-send case
       (`OcapnLean/Captp/NoForgery.lean`, 8 SMT thms)
-- [ ] **Deferred:** forwarding case (a peer re-exporting an imported
-      reference); same skeleton, additional ghost relation update on
-      `desc:export` of an imported pos
+- [x] **Forwarding case** — `OcapnLean/Captp/NoForgeryForwarded.lean`.
+      Adds a `forward` action whose precondition is `chainAuth s p r`
+      (a ghost relation populated by `setupAuthority` and `receive`)
+      instead of the strict `exported s p r` required by the
+      direct-send module. Safety property strengthens to
+      `imported D P R → ∃ S, exported S P R` (the original exporter
+      may be anywhere along the chain, not just the immediate
+      sender). Discharged: 20 SMT theorems across `setupAuthority`,
+      `send`, `forward`, and `receive`
 
 ## Milestone M6 — Three-party handoffs _(done 2026-05-14)_
 

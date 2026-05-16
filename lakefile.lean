@@ -212,6 +212,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.CrossedHellos,
     `OcapnLean.Captp.Gc,
     `OcapnLean.Captp.NoForgery,
+    `OcapnLean.Captp.NoForgeryForwarded,
     `OcapnLean.Captp.Threeparty,
     `OcapnLean.Captp.Impl,
     `OcapnLean.Captp.Refinement,
