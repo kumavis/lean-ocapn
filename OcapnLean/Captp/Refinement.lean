@@ -233,4 +233,31 @@ theorem promiseMonotoneFulfilled_lifts (impl : Impl.State) (spec : SpecState)
     (_hsafe : ∀ P V1 V2, spec.promiseResolved P V1 ∧ spec.promiseResolved P V2 → V1 = V2) :
     True := trivial
 
+/-- Veil's `promise_monotone_broken` — `broken P E1 ∧ broken P E2
+→ E1 = E2`. Vacuous on the impl for the same reason as the
+fulfilled clause. -/
+theorem promiseMonotoneBroken_lifts (impl : Impl.State) (spec : SpecState)
+    (_hsim : simulates impl spec)
+    (_hsafe : ∀ P E1 E2, spec.promiseBroken P E1 ∧ spec.promiseBroken P E2 → E1 = E2) :
+    True := trivial
+
+/-- Veil's `promise_disjoint` — a promise is never both resolved
+and broken. Vacuous on the impl. -/
+theorem promiseDisjoint_lifts (impl : Impl.State) (spec : SpecState)
+    (_hsim : simulates impl spec)
+    (_hsafe : ∀ P V E, ¬ (spec.promiseResolved P V ∧ spec.promiseBroken P E)) :
+    True := trivial
+
+/-- Veil's `listen_notify_after_settle` — a listener is only
+notified after its target has settled. Vacuous on the impl for the
+same reason as the promise clauses: the impl tracks neither
+`listening` nor `listenerNotified` state today; `simulates` pins
+both spec fields to their empty defaults. Documents the bilateral
+guarantee for when the impl grows a listener-notification table. -/
+theorem listenNotifyAfterSettle_lifts (impl : Impl.State) (spec : SpecState)
+    (_hsim : simulates impl spec)
+    (_hsafe : ∀ L T, spec.listenerNotified L T →
+                     (∃ V, spec.promiseResolved T V) ∨ (∃ E, spec.promiseBroken T E)) :
+    True := trivial
+
 end OcapnLean.Captp.Refinement

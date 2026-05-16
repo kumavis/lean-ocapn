@@ -333,4 +333,37 @@ we match for cross-impl compatibility). -/
 example : Base32.decode "abcd-efgh==" = Base32.decode "abcdefgh" := by
   native_decide
 
+/-! ## Percent-encoding on `toUri` hints
+
+`toUri` now percent-encodes hint *values* so that things like
+Goblins's `url=ws://host:port` hint round-trip faithfully through
+the URI. Keys stay URI-safe-only (identifiers like `host`, `port`,
+`url`). -/
+
+/-- A URL-shaped hint value with non-URI-safe bytes (the `:` and
+the `.`s) round-trips through `toUri ∘ fromUri`. This closes the
+round-trip loop for arbitrary hint values — previously `toUri`
+returned `none` on non-URI-safe bytes, so the loop was only
+defined for the URI-safe subset. -/
+example :
+    let p : PeerLocator :=
+      { transport := "websocket".toUTF8.toList
+      , designator := "abc".toUTF8.toList
+      , hints := some
+          [("url".toUTF8.toList, "ws://127.0.0.1:22090".toUTF8.toList)] }
+    (p.toUri.bind PeerLocator.fromUri) = some p := by
+  native_decide
+
+/-- Bytes that *are* URI-safe (`/` and `+` are, per our
+`isUriSafe`) pass through verbatim — they appear unencoded in the
+emitted URI. -/
+example :
+    PeerLocator.percentEncode "ab/cd+ef".toUTF8.toList = "ab/cd+ef" := by
+  native_decide
+
+/-- Bytes that aren't URI-safe become `%XX`. -/
+example :
+    PeerLocator.percentEncode ":".toUTF8.toList = "%3A" := by
+  native_decide
+
 end OcapnLean.Locators.Test

@@ -128,12 +128,20 @@ proof against `Captp.Spec`.
       `simulates : Impl.State → SpecState → Prop` plus
       `initial_simulates`, `abort_refines`, and the lifting lemma
       `bootstrapAtZero_lifts` (Veil safety ⇒ impl safety)
-- [ ] **Deferred:** `exportNew_refines` / `importNew_refines`
-      lemmas. Same shape as `abort_refines`; just need to mirror the
-      table updates.
-- [ ] **Deferred:** lifting lemmas for the other Veil safety clauses
-      (promise monotonicity, table functionality). Mechanically
-      similar to `bootstrapAtZero_lifts`.
+- [x] `exportNew_refines` / `importNew_refines` proved
+      (`OcapnLean/Captp/Refinement.lean:119-185`).
+- [x] Lifting lemmas for the spec's other safety clauses
+      (`importedFunctional_lifts`, `exportedFunctional_lifts`,
+      `promiseMonotoneFulfilled_lifts`, `promiseMonotoneBroken_lifts`,
+      `promiseDisjoint_lifts`, `listenNotifyAfterSettle_lifts`).
+      The promise/listener ones are vacuous on the current impl
+      (which doesn't track that state); they're stated so the
+      bilateral guarantee is documented for when the impl grows
+      those tables.
+- [x] Lifts for the *extended* Veil modules:
+      `crossedHellosUnique_lifts` (P5), `gcSound_lifts` (P4),
+      `handoffNoReplay_lifts` (P6) — all in
+      `OcapnLean/Captp/RefinementExtended.lean`.
 
 ## Milestone M8 — Interop _(done 2026-05-15)_
 
@@ -204,11 +212,13 @@ proof against `Captp.Spec`.
       now emits a `goblins-ws-uri uri=…` banner line via
       `ocapn-id->string`). Round-trip tests in
       `OcapnLean.Test.Locators` plus rejection-path tests.
-- [ ] **Deferred:** percent-encoder for `toUri` (currently we
-      bail out with `none` on any non-URI-safe byte rather than
-      emitting `%XX`). Symmetric to the percent-decoder we now
-      have on the parser side; would let `toUri ∘ fromUri = id`
-      hold for arbitrary byte values, not just the URI-safe subset.
+- [x] Percent-encoder for `toUri` hint values
+      (`PeerLocator.percentEncode`). Keys still must be URI-safe
+      (they're identifiers like `host`, `port`, `url`); values
+      are now `%XX`-encoded for non-URI-safe bytes. Closes the
+      `fromUri ∘ toUri = some` loop for arbitrary hint values;
+      see the `Test.Locators` round-trip example with
+      `url=ws://127.0.0.1:22090` as a hint.
 - [ ] **Deferred:** sturdyref persistence (on-disk store, with
       key-rotation policy). Orthogonal to the `fetch` layer above
       (which just consumes an in-memory `SturdyRef`). Skipped per

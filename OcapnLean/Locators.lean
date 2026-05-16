@@ -197,15 +197,34 @@ private def bytesToStr (bs : List UInt8) : String :=
 
 namespace PeerLocator
 
-/-- Format a hints list as `?k1=v1&k2=v2&…`. Returns `none` if any
-key or value is outside the URI-safe subset. The empty-list and
-`none` cases produce no query string at all. -/
+/-- Percent-encode a single byte: URI-safe bytes pass through
+verbatim; everything else becomes `%XX` (uppercase hex). -/
+private def percentEncodeByte (b : UInt8) : String :=
+  if isUriSafe b then
+    String.mk [Char.ofNat b.toNat]
+  else
+    let hi := b.toNat / 16
+    let lo := b.toNat % 16
+    let hex := "0123456789ABCDEF".toList
+    String.mk ['%', hex[hi]!, hex[lo]!]
+
+/-- Percent-encode a byte list: concatenates `percentEncodeByte`. -/
+def percentEncode (bs : List UInt8) : String :=
+  bs.foldr (fun b acc => percentEncodeByte b ++ acc) ""
+
+/-- Format a hints list as `?k1=v1&k2=v2&…`. Keys must be in the
+URI-safe subset (they're identifiers like `host`, `port`, `url`);
+values are percent-encoded so non-URI-safe bytes (such as the `:`
+and `/` in a Goblins `url=ws://host:port` hint) round-trip
+faithfully. Returns `none` if any *key* is outside the URI-safe
+subset. The `none`-hints and empty-list cases produce no query
+string at all. -/
 def hintsToUriSuffix : Option (List (List UInt8 × List UInt8)) → Option String
   | none      => some ""
   | some []   => some ""
   | some kvs =>
-    if kvs.all (fun (k, v) => allUriSafe k && allUriSafe v) then
-      let parts := kvs.map (fun (k, v) => bytesToStr k ++ "=" ++ bytesToStr v)
+    if kvs.all (fun (k, _) => allUriSafe k) then
+      let parts := kvs.map (fun (k, v) => bytesToStr k ++ "=" ++ percentEncode v)
       some ("?" ++ String.intercalate "&" parts)
     else
       none
