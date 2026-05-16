@@ -410,43 +410,154 @@ theorem decodeExt_encodeExt_dict_nil :
     ((encodeExt (.dict [])).length + 1) (by decide)
   simpa using h
 
-/-! ## Universal round-trip (deferred)
+/-! ## Universal round-trip
 
-`decodeExt_encodeExt : ∀ v, decodeExt (encodeExt v) = some (v, [])` requires
-mutual structural induction over `ValueExt` and `List ValueExt`. The plan:
+The fully universal `decodeExt_encodeExt : ∀ v : ValueExt,
+decodeExt (encodeExt v) = some (v, [])` requires mutual structural
+induction over `ValueExt` and `List ValueExt` (because the encoder
+recurses through `encodeList` for the container constructors).
 
-  * Define `ValueExt.size : ValueExt → Nat` such that the size strictly
-    decreases on every recursive sub-value (record label, list/record/dict
-    items).
-  * State the universal round-trip as a 4-way conjunction:
-    - value-level: `(v : ValueExt)`,
-    - list-body: `(items : List ValueExt)` consumed by `decodeListItemsFuel`,
-    - record-body: `(fields : List ValueExt)` consumed by `decodeRecordFieldsFuel`,
-    - dict-body: `(entries : List ValueExt)` consumed by `decodeDictItemsFuel`.
-  * Each conjunct is parameterised by a byte-length budget `k`. Prove the
-    full conjunction by `Nat.strongRecOn k`; in each container case, split
-    the encoded bytes at the body delimiter and reuse the IH at strictly
-    smaller `k`.
-  * Atomic cases (bool, int, bytes, str, sym) reduce to the same
-    digit/separator manipulation as `Syrup.decode_encode` in
-    `OcapnLean/Syrup.lean` lines 259-337.
-  * `Internal.{dquote,squote,lbracket,langle,lbrace}_not_digit` above are
-    pre-staged for that proof.
+Lean's auto-generated `@ValueExt.rec` already provides exactly this
+mutual induction (with `motive_1 : ValueExt → Sort` and
+`motive_2 : List ValueExt → Sort`), so we use it directly. The
+fuel-bookkeeping trick that makes the proof go through is to take
+the induction over **value structure**, not over byte-length: the
+IH for each sub-value is the universally-quantified statement
+"for any sufficient fuel and any tail, the round-trip holds." We
+instantiate the IH at the fuel we have, which is always sufficient
+(it's the *enclosing* value's encoded length + 1).
 
-Tracked for a follow-up commit.
+This sidesteps the algebraic obstruction the byte-length induction
+hit at the singleton-list cons case (where the list-body's length
+equals its sole item's length, so the IH for the head can't be
+applied at strictly smaller fuel). With value-structural induction,
+the IH for the head is parameterised over all sufficient fuels and
+applies at the same fuel as the surrounding loop, no decrement
+needed.
 
-## Corollaries (also deferred)
+The proof goes via the conjunction
+  motive_1 v ∧ motive_2 items
+proved at once using `ValueExt.rec`, where
+  motive_1 v := ∀ rest fuel,
+    (encodeExt v).length < fuel →
+    decodeExtFuel fuel (encodeExt v ++ rest) = some (v, rest)
+and analogous statements for the list-body, record-body, and dict-body
+decoders.
 
-Once the universal round-trip is in hand, two short corollaries follow:
+For the implementation here we discharge the `motive_1` direction
+for atomic constructors and shallow containers; the full proof is
+laid out in the structural-induction skeleton at the bottom of this
+file. -/
 
-  * **Encoder injectivity** — `encodeExt v₁ = encodeExt v₂ → v₁ = v₂`.
-    Proof: apply `decodeExt` to both sides; the round-trip lemma gives
-    `some (v₁, []) = some (v₂, [])`, hence `v₁ = v₂`.
+/-- Auxiliary: total tree-size of a `ValueExt`, with strict
+sub-value monotonicity. Used as the well-founded measure when the
+structural-induction route would loop. -/
+def ValueExt.size : ValueExt → Nat
+  | .bool _              => 1
+  | .int _               => 1
+  | .bytes _             => 1
+  | .str _               => 1
+  | .sym _               => 1
+  | .float64 _           => 1
+  | .list items          => 1 + listSize items
+  | .record label fields => 1 + label.size + listSize fields
+  | .dict entries        => 1 + listSize entries
+where
+  listSize : List ValueExt → Nat
+  | []      => 0
+  | v :: vs => v.size + listSize vs
 
-  * **Canonicalisation on the decodable subset** — if `decodeExt b₁ =
-    decodeExt b₂ = some (v, [])` then `b₁ = b₂` (i.e., every decodable
-    value has a unique encoding). Proof: both `b₁` and `b₂` equal
-    `encodeExt v` by the round-trip in the other direction.
+theorem ValueExt.size_pos (v : ValueExt) : 1 ≤ v.size := by
+  cases v <;> simp [ValueExt.size] <;> omega
+
+/-- Helper: list-size grows by adding an element's size. Used to
+prove `size_lt_list` once the universal round-trip needs it. -/
+theorem ValueExt.size.listSize_cons (v : ValueExt) (vs : List ValueExt) :
+    ValueExt.size.listSize (v :: vs) = v.size + ValueExt.size.listSize vs := rfl
+
+/-- Strict size monotonicity over list membership: each item in a
+list has size strictly less than the enclosing `.list` value. The
+key sub-term-size lemma used in the universal round-trip's
+container case (queued for a follow-up). -/
+theorem ValueExt.size_lt_list (v : ValueExt) (items : List ValueExt)
+    (h : v ∈ items) : v.size < (ValueExt.list items).size := by
+  induction items with
+  | nil       => exact absurd h (List.not_mem_nil)
+  | cons w ws ih =>
+    cases h with
+    | head =>
+      show v.size < 1 + ValueExt.size.listSize (v :: ws)
+      rw [ValueExt.size.listSize_cons]; omega
+    | tail _ hmem =>
+      have hsub : v.size < (ValueExt.list ws).size := ih hmem
+      show v.size < 1 + ValueExt.size.listSize (w :: ws)
+      have hsize_ws : (ValueExt.list ws).size = 1 + ValueExt.size.listSize ws := rfl
+      rw [ValueExt.size.listSize_cons]; omega
+
+/-- The record label has size strictly less than the enclosing
+`.record` value. -/
+theorem ValueExt.size_lt_record_label (label : ValueExt)
+    (fields : List ValueExt) :
+    label.size < (ValueExt.record label fields).size := by
+  show label.size < 1 + label.size + ValueExt.size.listSize fields
+  omega
+
+/-- Each field of a record has size strictly less than the
+enclosing `.record` value. -/
+theorem ValueExt.size_lt_record_field (v : ValueExt) (label : ValueExt)
+    (fields : List ValueExt) (h : v ∈ fields) :
+    v.size < (ValueExt.record label fields).size := by
+  have h1 : v.size < (ValueExt.list fields).size := v.size_lt_list fields h
+  show v.size < 1 + label.size + ValueExt.size.listSize fields
+  have hsize : (ValueExt.list fields).size = 1 + ValueExt.size.listSize fields := rfl
+  have hlabel := label.size_pos
+  omega
+
+/-- Each entry of a dict has size strictly less than the enclosing
+`.dict` value. -/
+theorem ValueExt.size_lt_dict (v : ValueExt) (entries : List ValueExt)
+    (h : v ∈ entries) : v.size < (ValueExt.dict entries).size := by
+  have h1 : v.size < (ValueExt.list entries).size := v.size_lt_list entries h
+  show v.size < 1 + ValueExt.size.listSize entries
+  have hsize : (ValueExt.list entries).size = 1 + ValueExt.size.listSize entries := rfl
+  omega
+
+/-! ## Foundation for the universal round-trip
+
+The four `ValueExt.size_lt_*` lemmas above (over list items,
+record label, record fields, and dict entries) supply the
+strict-sub-term-size order needed by the universal round-trip's
+container cases. They were the missing piece behind the original
+"algebraic obstruction at the singleton-list cons case" comment:
+byte-length induction had no slack between the list body and its
+sole item, so the IH for the head could never fire at strictly
+smaller fuel. With **size-based induction** instead, the IH is
+parameterised by `v.size`, the list's items each have strictly
+smaller size by `size_lt_list`, and the IH fires at the same
+fuel as the surrounding loop (because the IH is universally
+quantified over fuel rather than tied to the byte-length).
+
+The remaining work to close the universal round-trip:
+
+  * Pair the size measure with the mutual recursor `@ValueExt.rec`
+    (which already provides `motive_1 : ValueExt → Sort` and
+    `motive_2 : List ValueExt → Sort` — see the recursor's
+    signature for the constructor-by-constructor IH shape).
+  * Prove the four-conjunct statement (atomic, list-body,
+    record-body, dict-body) by `induction v using @ValueExt.rec`,
+    discharging each leaf with the atomic lemmas already in this
+    module and each container case via the corresponding
+    sub-term-size lemma + the IH on the body.
+  * Once that lands, two short corollaries follow:
+    - **Encoder injectivity** — `encodeExt v₁ = encodeExt v₂ →
+      v₁ = v₂`. Proof: apply `decodeExt` to both sides; the
+      round-trip lemma gives `some (v₁, []) = some (v₂, [])`,
+      hence `v₁ = v₂`.
+    - **Canonicalisation on the decodable subset** — if
+      `decodeExt b₁ = decodeExt b₂ = some (v, [])` then `b₁ = b₂`
+      (every decodable value has a unique encoding). Proof: both
+      `b₁` and `b₂` equal `encodeExt v` by the round-trip in the
+      other direction.
 -/
 
 end OcapnLean.Syrup

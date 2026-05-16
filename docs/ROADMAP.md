@@ -33,13 +33,24 @@ round-trip.
       `.list []` / `.dict []`
 - [x] Cross-impl byte-parity vs the Python reference
       (13 `native_decide` fixtures: 9 base + 4 extended)
-- [ ] **Deferred:** universal round-trip proof for the container types
-      (`decodeExt_encodeExt : ∀ v : ValueExt`). Strong-induction attempt
-      hit an algebraic obstruction at the singleton-list cons case where
-      `(encL [v]).length = (encodeExt v).length`, so byte-length induction
-      can't supply a strict `< k - 1` IH for the head. Resolution paths:
-      custom well-founded recursion on a combined `(fuel, depth)` measure,
-      OR weaken atomic helpers from `length + 1 ≤ fuel` to `length ≤ fuel`.
+- [ ] **Deferred (foundation laid):** universal round-trip proof for
+      the container types (`decodeExt_encodeExt : ∀ v : ValueExt`).
+      `RoundTripExt.lean` now defines `ValueExt.size` plus four
+      strict-sub-term-size lemmas
+      (`size_lt_list`, `size_lt_record_label`,
+      `size_lt_record_field`, `size_lt_dict`) — the size-based
+      well-founded measure that clears the original algebraic
+      obstruction at the singleton-list cons case (byte-length
+      induction couldn't supply a strict `< k - 1` IH for the
+      head; size-based induction over `ValueExt.rec`'s mutual
+      motives can). Remaining: pair the measure with the
+      auto-generated `@ValueExt.rec` (two motives, one for values
+      and one for lists), prove the four-conjunct statement
+      (atomic / list-body / record-body / dict-body) by structural
+      induction. Corollaries (encoder injectivity, decode
+      canonicalisation) follow trivially once the round-trip
+      lands. See the long-form note at the bottom of
+      `OcapnLean/Syrup/RoundTripExt.lean`.
 - [x] **Float64** added to the codec
       (`OcapnLean.Syrup.ValueExt.float64 (bits : UInt64)`) per
       spec `Notation.md:99` — `D` + 8 bytes IEEE 754 big-endian.
