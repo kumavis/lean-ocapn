@@ -54,10 +54,13 @@ def specInitial : SpecState where
   listening _ _   := False
   listenerNotified _ _ := False
   alive           := True
+  wasAborted      := False
 
-/-- A spec state representing an *aborted* impl configuration. -/
+/-- A spec state representing an *aborted* impl configuration. The
+spec's `wasAborted` ghost flips in lockstep with `alive` per the P7
+safety property. -/
 def specAborted (spec : SpecState) : SpecState :=
-  { spec with alive := False }
+  { spec with alive := False, wasAborted := True }
 
 /-- A spec state representing a successful `exportNew` action on the
 spec side: extend `exported` to also relate `(p, r)`. -/

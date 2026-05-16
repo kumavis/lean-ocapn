@@ -111,7 +111,8 @@ private theorem decodeExtFuel_digits_then
     (sep : UInt8) (rest : List UInt8) (fuel : Nat)
     (hd : isDigit d = true)
     (hd_ne_t : d ≠ 0x74) (hd_ne_f : d ≠ 0x66)
-    (hd_ne_lbr : d ≠ 0x5b) (hd_ne_lbrc : d ≠ 0x7b) (hd_ne_la : d ≠ 0x3c)
+    (hd_ne_lbr : d ≠ 0x5b) (hd_ne_lbrc : d ≠ 0x7b) (hd_ne_D : d ≠ 0x44)
+    (hd_ne_la : d ≠ 0x3c)
     (hall : ∀ b ∈ d :: ds_tail, isDigit b = true)
     (hsep : isDigit sep = false) :
     decodeExtFuel (fuel + 1) (d :: ds_tail ++ sep :: rest)
@@ -120,10 +121,11 @@ private theorem decodeExtFuel_digits_then
         if d = 0x66 then _ else
         if d = 0x5b then _ else
         if d = 0x7b then _ else
+        if d = 0x44 then _ else
         if d = 0x3c then _ else
         if isDigit d then _ else none) = _
   rw [if_neg hd_ne_t, if_neg hd_ne_f, if_neg hd_ne_lbr,
-      if_neg hd_ne_lbrc, if_neg hd_ne_la, if_pos hd]
+      if_neg hd_ne_lbrc, if_neg hd_ne_D, if_neg hd_ne_la, if_pos hd]
   show (let (ds, after) := takeDigits (d :: ds_tail ++ sep :: rest)
         decodeExtAfterDigits ds after) = _
   have hsplit : takeDigits (d :: ds_tail ++ sep :: rest)
@@ -149,6 +151,7 @@ private theorem decodeExtFuel_encodeExt_intNat_app
   have hd_ne_f : d ≠ 0x66 := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_lbr : d ≠ 0x5b := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_lbrc : d ≠ 0x7b := by intro heq; rw [heq] at hd; cases hd
+  have hd_ne_D : d ≠ 0x44 := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_la : d ≠ 0x3c := by intro heq; rw [heq] at hd; cases hd
   have hall : ∀ b ∈ d :: ds_tail, isDigit b = true := by
     rw [← hcons]; exact encodeNat_all_digits k
@@ -158,7 +161,7 @@ private theorem decodeExtFuel_encodeExt_intNat_app
     rw [hcons]; simp
   rw [hk_eq]
   rw [decodeExtFuel_digits_then d ds_tail 0x2b rest m hd hd_ne_t hd_ne_f
-        hd_ne_lbr hd_ne_lbrc hd_ne_la hall plus_not_digit]
+        hd_ne_lbr hd_ne_lbrc hd_ne_D hd_ne_la hall plus_not_digit]
   show decodeExtAfterDigits (d :: ds_tail) (0x2b :: rest) = _
   simp only [decodeExtAfterDigits]
   rw [← hcons, digitsToNat_encodeNat]
@@ -181,6 +184,7 @@ private theorem decodeExtFuel_encodeExt_intNeg_app
   have hd_ne_f : d ≠ 0x66 := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_lbr : d ≠ 0x5b := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_lbrc : d ≠ 0x7b := by intro heq; rw [heq] at hd; cases hd
+  have hd_ne_D : d ≠ 0x44 := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_la : d ≠ 0x3c := by intro heq; rw [heq] at hd; cases hd
   have hall : ∀ b ∈ d :: ds_tail, isDigit b = true := by
     rw [← hcons]; exact encodeNat_all_digits (k+1)
@@ -190,7 +194,7 @@ private theorem decodeExtFuel_encodeExt_intNeg_app
     rw [hcons]; simp
   rw [hk_eq]
   rw [decodeExtFuel_digits_then d ds_tail 0x2d rest m hd hd_ne_t hd_ne_f
-        hd_ne_lbr hd_ne_lbrc hd_ne_la hall minus_not_digit]
+        hd_ne_lbr hd_ne_lbrc hd_ne_D hd_ne_la hall minus_not_digit]
   show decodeExtAfterDigits (d :: ds_tail) (0x2d :: rest) = _
   simp only [decodeExtAfterDigits]
   rw [← hcons, digitsToNat_encodeNat]
@@ -248,6 +252,7 @@ private theorem decodeExtFuel_lenSep_app
   have hd_ne_f : d ≠ 0x66 := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_lbr : d ≠ 0x5b := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_lbrc : d ≠ 0x7b := by intro heq; rw [heq] at hd; cases hd
+  have hd_ne_D : d ≠ 0x44 := by intro heq; rw [heq] at hd; cases hd
   have hd_ne_la : d ≠ 0x3c := by intro heq; rw [heq] at hd; cases hd
   have hall : ∀ b ∈ d :: ds_tail, isDigit b = true := by
     rw [← hcons]; exact encodeNat_all_digits bs.length
@@ -256,7 +261,7 @@ private theorem decodeExtFuel_lenSep_app
     rw [hcons]; simp
   rw [hk_eq]
   rw [decodeExtFuel_digits_then d ds_tail sep (bs ++ rest) m hd hd_ne_t hd_ne_f
-        hd_ne_lbr hd_ne_lbrc hd_ne_la hall hsep]
+        hd_ne_lbr hd_ne_lbrc hd_ne_D hd_ne_la hall hsep]
   have hdn : digitsToNat (d :: ds_tail) = bs.length := by
     rw [← hcons]; exact digitsToNat_encodeNat bs.length
   rcases kase with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩

@@ -22,9 +22,21 @@ inductive structural induction over `ValueExt` (which recurses
 through `List ValueExt` in the `list`/`record` cases) — a tractable
 but verbose proof queued for a follow-up commit.
 
-(`dict`, `set`, `float`, `double` will land later; they aren't
-needed for the OCapN `op:*` and `desc:*` frames the event loop in
-`Captp.Run` already handles.)
+This module covers every concrete-value type the OCapN spec
+enumerates in `draft-specifications/Notation.md` lines 57-204:
+
+  * boolean (`.bool`) — `t` / `f`
+  * integer (`.int`) — `<digits>+` / `<digits>-`
+  * float64 (`.float64`) — `D` + 8 bytes (IEEE 754 binary64, big-endian)
+  * string (`.str`) — `<n>"<utf8>`
+  * symbol (`.sym`) — `<n>'<utf8>`
+  * byte-array (`.bytes`) — `<n>:<bytes>`
+  * struct (`.dict`) — `{ key val key val … }`
+  * list (`.list`) — `[ … ]`
+  * record (`.record`) — `<` label fields `>`
+
+There is no separate "double" (Float64 *is* double-precision per
+spec) and no "set" type (OCapN has none).
 -/
 
 namespace OcapnLean.Syrup
@@ -39,10 +51,27 @@ inductive ValueExt
   | list   (items : List ValueExt)
   | record (label : ValueExt) (fields : List ValueExt)
   | dict   (entries : List ValueExt)  -- flat [k1, v1, k2, v2, …]
+  -- Wire-bit-exact IEEE 754 binary64. Stored as raw UInt64 so NaN
+  -- payloads and signed zeros round-trip without going through
+  -- Lean's `Float` (which would lose those distinctions). Convert
+  -- via `Float.toBits` / `Float.ofBits` at the use site.
+  | float64 (bits : UInt64)
 deriving Inhabited, Repr
 
 namespace Encode
 open Encode (encodeNat encodeInt digitByte)
+
+/-- Big-endian byte split of a `UInt64`, MSB-first. -/
+@[inline] def uint64ToBytesBE (n : UInt64) : List UInt8 :=
+  [ (n >>> 56).toUInt8
+  , (n >>> 48).toUInt8
+  , (n >>> 40).toUInt8
+  , (n >>> 32).toUInt8
+  , (n >>> 24).toUInt8
+  , (n >>> 16).toUInt8
+  , (n >>>  8).toUInt8
+  ,  n.toUInt8
+  ]
 
 /-- Encode a `ValueExt`. -/
 def encodeExt : ValueExt → List UInt8
@@ -58,6 +87,8 @@ def encodeExt : ValueExt → List UInt8
       0x3c :: encodeExt label ++ encodeList fs ++ [0x3e]              -- '<' ... '>'
   | .dict entries    =>
       0x7b :: encodeList entries ++ [0x7d]                            -- '{' ... '}'
+  | .float64 bits    =>
+      0x44 :: uint64ToBytesBE bits                                    -- 'D' + 8 bytes
 where
   encodeList : List ValueExt → List UInt8
   | []      => []
@@ -82,6 +113,20 @@ def decodeExtFuel : Nat → List UInt8 → Option (ValueExt × List UInt8)
     else if b = 0x66 then some (.bool false, rest)
     else if b = 0x5b then decodeListItemsFuel fuel rest []          -- '['
     else if b = 0x7b then decodeDictItemsFuel fuel rest []          -- '{'
+    else if b = 0x44 then                                            -- 'D' float64
+      match rest with
+      | b0 :: b1 :: b2 :: b3 :: b4 :: b5 :: b6 :: b7 :: r =>
+        let bits :=
+          (b0.toUInt64 <<< 56) |||
+          (b1.toUInt64 <<< 48) |||
+          (b2.toUInt64 <<< 40) |||
+          (b3.toUInt64 <<< 32) |||
+          (b4.toUInt64 <<< 24) |||
+          (b5.toUInt64 <<< 16) |||
+          (b6.toUInt64 <<<  8) |||
+           b7.toUInt64
+        some (.float64 bits, r)
+      | _ => none
     else if b = 0x3c then                                            -- '<'
       match decodeExtFuel fuel rest with
       | none              => none
@@ -193,6 +238,31 @@ example : reEncode (encodeExt (.list [.int 1, .int 2, .int 3]))
 
 example : reEncode (encodeExt (.record (.sym [0x61]) []))
         = some ([0x3c, 0x31, 0x27, 0x61, 0x3e], []) := by native_decide
+
+-- Float64 wire shape: `D` (0x44) + 8 bytes big-endian. Use raw
+-- UInt64 bits so the test is bit-exact (and works for NaN payloads
+-- and signed zeros that Lean's `Float` equality would collapse).
+example :  -- +1.0 = 0x3FF0000000000000
+    reEncode (encodeExt (.float64 0x3FF0_0000_0000_0000))
+    = some ([0x44, 0x3F, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], []) := by
+  native_decide
+example :  -- +0.0
+    reEncode (encodeExt (.float64 0)) = some ([0x44, 0, 0, 0, 0, 0, 0, 0, 0], []) := by
+  native_decide
+example :  -- -0.0 = 0x8000000000000000 — distinct from +0.0 at the bit level
+    reEncode (encodeExt (.float64 0x8000_0000_0000_0000))
+    = some ([0x44, 0x80, 0, 0, 0, 0, 0, 0, 0], []) := by
+  native_decide
+example :  -- Round-trip a value whose bytes span the full octet width.
+    reEncode (encodeExt (.float64 0x0123_4567_89AB_CDEF))
+    = some ([0x44, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF], []) := by
+  native_decide
+example :  -- Float64 nested inside a list survives the container codec.
+    reEncode (encodeExt (.list [.float64 0x3FF0_0000_0000_0000, .int 1]))
+    = some
+        ([0x5b, 0x44, 0x3F, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x31, 0x2b, 0x5d], []) := by
+  native_decide
 
 -- The nested op:deliver shape: input matches output (modulo encoding)
 example : reEncode (encodeExt

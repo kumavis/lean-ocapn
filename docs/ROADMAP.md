@@ -40,7 +40,20 @@ round-trip.
       can't supply a strict `< k - 1` IH for the head. Resolution paths:
       custom well-founded recursion on a combined `(fuel, depth)` measure,
       OR weaken atomic helpers from `length + 1 ≤ fuel` to `length ≤ fuel`.
-- [ ] **Deferred:** extend codec to floats, doubles, sets.
+- [x] **Float64** added to the codec
+      (`OcapnLean.Syrup.ValueExt.float64 (bits : UInt64)`) per
+      spec `Notation.md:99` — `D` + 8 bytes IEEE 754 big-endian.
+      Stored as raw `UInt64` so NaN payloads and signed zeros
+      round-trip without Lean's `Float`-equality collapsing them.
+      `RoundTripExt.lean` proof updated for the new dispatch
+      byte. Round-trip verified live against Endo by extending
+      `client-vs-external`'s echo payload to include
+      `.float64 0x3FF0_0000_0000_0000` (= +1.0); Endo's decoder
+      handles it (`projects/endo/packages/ocapn/src/syrup/decode.js:25`)
+      and the byte-equality check passes.
+- [ ] **Skipped:** doubles, sets — not in the OCapN spec.
+      Float64 *is* double-precision per `Model.md:114`; OCapN
+      has no Set type.
 
 ## Milestone M2 — One-peer CapTP state machine in Veil _(largely done 2026-05-15)_
 
@@ -64,7 +77,13 @@ round-trip.
 - [x] 143/143 SMT theorems discharged
 
 **Remaining:**
-- [ ] P7 abort terminal (needs history tracking — punted to a later milestone)
+- [x] **P7 abort terminal** — `OcapnLean/Captp/Spec.lean` gains
+      a `wasAborted` ghost flag set when `abort` fires; safety
+      `abort_terminal: wasAborted ↔ ¬ alive` discharged over all
+      11 actions (155 SMT theorems). Combined with the
+      `require alive` precondition on every other action, this
+      gives the full operational property: once `abort` fires,
+      no further state-mutating action can succeed.
 
 ## Milestone M3 — E2E FIFO _(done 2026-05-14, ahead of schedule)_
 
@@ -90,8 +109,16 @@ round-trip.
 - [x] **P4 (GC soundness)** discharged
 - [x] **P5 (crossed-hellos determinism)** discharged
       (`OcapnLean/Captp/CrossedHellos.lean`, 12 SMT thms)
-- [ ] **Deferred:** bounded model checks for GC stress scenarios via
-      `sat trace { ... }`
+- [x] **Bounded model traces for GC stress** —
+      `OcapnLean/Captp/Gc.lean` now exercises three concrete
+      action sequences via `sat trace { … } by bmc_sat`: the
+      happy-path round-trip, three in-flight ref-ships
+      interleaved, and a send-and-dec interleaving that
+      stress-tests `exporter_count_decomp` across multiple
+      in-flight messages on the same position. SMT-discharged
+      witnesses confirm the spec admits these scenarios
+      concretely (complement to the *forall-states*
+      `#check_invariants` induction).
 
 ## Milestone M5 — No-forgery (capability safety) _(done 2026-05-14)_
 

@@ -119,8 +119,15 @@ def main (args : List String) : IO Unit := do
                  | none => 0
   IO.println s!"[external-smoke] echo fetched at pos {echoPos}"
 
+  -- Args span every concrete-value type the OCapN spec defines that
+  -- the echo actor can handle. Including a `.float64` here turns the
+  -- existing byte-equality check below into an interop test for the
+  -- spec's Float64 type (encoded as `D` + 8 bytes big-endian per
+  -- `Notation.md`): if either side misencodes or misdecodes, the
+  -- byte comparison fails. `0x3FF0_0000_0000_0000` is IEEE 754 +1.0.
   let myArgs : List ValueExt :=
-    [ .str "hi".toUTF8.toList, .int 1, .bool false ]
+    [ .str "hi".toUTF8.toList, .int 1, .bool false
+    , .float64 0x3FF0_0000_0000_0000 ]
   let (some rmd, _) ← Captp.Client.deliver s
                    (Captp.Session.buildDescExport echoPos) myArgs
                    (withRmd := true)

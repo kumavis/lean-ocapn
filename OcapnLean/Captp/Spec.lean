@@ -53,6 +53,11 @@ relation listening : pos → pos → Prop
 -- on settle" at the spec level.
 relation listenerNotified : pos → pos → Prop
 individual alive : Prop
+-- Ghost flag — set the first time `abort` fires. Together with the
+-- `require alive` guard on every other action, this gives the
+-- abort-terminal safety property (P7): once `wasAborted`, the
+-- session cannot resume.
+individual wasAborted : Prop
 
 #gen_state
 
@@ -65,7 +70,8 @@ after_init {
   promiseBroken P E := False;
   listening L T := False;
   listenerNotified L T := False;
-  alive := True
+  alive := True;
+  wasAborted := False
 }
 
 -- Export an object at a fresh position (not the bootstrap slot).
@@ -112,10 +118,14 @@ action breakPromise (p : pos) (e : error) = {
   promiseBroken p e := True
 }
 
--- The session aborts.
+-- The session aborts. Sets `alive := False` (which gates every
+-- subsequent action via their `require alive` precondition) and
+-- records the abort in the `wasAborted` ghost flag (used by the
+-- `abort_terminal` safety property below).
 action abort = {
   require alive
-  alive := False
+  alive := False;
+  wasAborted := True
 }
 
 -- `op:get to-desc field-name answer-pos` — read a named field of the
@@ -205,6 +215,26 @@ safety [promise_disjoint]
 -- subscribers don't see notifications on still-pending promises.
 safety [listen_notify_after_settle]
   listenerNotified L T → ((∃ V, promiseResolved T V) ∨ (∃ E, promiseBroken T E))
+
+-- Safety [P7]: abort is terminal.
+--
+-- The bidirectional mirror `wasAborted ↔ ¬ alive` is what we prove
+-- here. Combined with the `require alive` guard on every other
+-- action, this gives the full operational guarantee that after
+-- `abort` fires, no further state-mutating action can succeed: a
+-- failed precondition makes the action a structural no-op in Veil
+-- semantics. So the spec encodes "abort is terminal" by:
+--
+--   1. `wasAborted` is set exactly when `abort` fires (this
+--      invariant).
+--   2. `alive` is cleared exactly when `abort` fires (also this
+--      invariant — same step).
+--   3. Every other action requires `alive` (structural).
+--
+-- Conjoining (1)+(2)+(3) gives: once the system has aborted,
+-- nothing else can run; hence the state is frozen.
+safety [abort_terminal]
+  wasAborted ↔ ¬ alive
 
 ------------------------------------------------------------------------
 -- Supporting invariants
