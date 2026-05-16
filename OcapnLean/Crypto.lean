@@ -46,6 +46,11 @@ opaque ed25519Sign (sk : @& ByteArray) (msg : @& ByteArray) : ByteArray
 @[extern "ocapnlean_ed25519_verify"]
 opaque ed25519Verify (pk : @& ByteArray) (msg : @& ByteArray) (sig : @& ByteArray) : Bool
 
+/-- `n` cryptographically-random bytes from libsodium's CSPRNG.
+Used for nonces (e.g. the WebSocket designator-auth challenge). -/
+@[extern "ocapnlean_random_bytes"]
+opaque randomBytes (n : USize) : IO ByteArray
+
 /-- Convenience: double-SHA-256 (matches the spec's Public Identifier
 derivation: `SHA-256(SHA-256(serialised pubkey))`). -/
 def sha256d (input : ByteArray) : ByteArray :=

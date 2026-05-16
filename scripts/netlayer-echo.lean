@@ -2,8 +2,15 @@ import OcapnLean.Netlayer.Tcp
 
 /-!
 Runtime smoke test for `OcapnLean.Netlayer.Tcp`. Spawns an accept-one
-echo server on 127.0.0.1, connects from the same process, sends a
-payload, and verifies it round-trips.
+echo server on 127.0.0.1, connects from the same process, sends one
+Syrup-bytes message and verifies it round-trips.
+
+After the netlayer refactor (`Netlayer` is message-oriented; framing
+is owned by the transport), each side speaks in complete CapTP-shaped
+messages — so the netlayer self-loopback is exactly one
+`sendMessage` + `recvMessage?` pair per direction. The payload here
+is a valid Syrup-encoded `<bytes>` value so it can flow through the
+default raw-Syrup framing.
 
 Run from the project root:
 
@@ -11,13 +18,9 @@ Run from the project root:
 
 Successful output:
 
-    [server] got 13 bytes
-    [client] sent 13, echoed back 13
-    [client] payload : hello, ocapn!
-    [client] echoed  : hello, ocapn!
+    [server] got 17 bytes
+    [client] sent 17, echoed back 17
     OK
-
-Exits with code 1 if the bytes don't match.
 -/
 
 open OcapnLean.Netlayer
@@ -29,26 +32,35 @@ def main : IO Unit := do
   let acceptOne ← Tcp.listen addr
   let serverTask ← IO.asTask (prio := .dedicated) do
     let server ← acceptOne
-    let received := (← server.recv? 4096).getD ByteArray.empty
-    IO.println s!"[server] got {received.size} bytes"
-    server.send received
-    server.close
+    match ← server.recvMessage? with
+    | none =>
+      IO.eprintln "[server] EOF before message"
+    | some bs =>
+      IO.println s!"[server] got {bs.size} bytes"
+      server.sendMessage bs
+      server.close
 
   IO.sleep 50  -- let the listener settle
 
+  -- A valid raw-Syrup message: the bytes literal `"hello, ocapn!"`
+  -- encoded as a Syrup `<len>:<body>` byte value.
+  let inner : ByteArray := "hello, ocapn!".toUTF8
+  let payload : ByteArray :=
+    ⟨((toString inner.size).toUTF8.toList ++ [0x3a]).toArray⟩ ++ inner
+
   let client ← Tcp.connect addr
-  let payload : ByteArray := "hello, ocapn!".toUTF8
-  client.send payload
-  let echoed := (← client.recv? 4096).getD ByteArray.empty
-  client.close
-  IO.println s!"[client] sent {payload.size}, echoed back {echoed.size}"
-  IO.println s!"[client] payload : {String.fromUTF8! payload}"
-  IO.println s!"[client] echoed  : {String.fromUTF8! echoed}"
-
-  let _ ← IO.wait serverTask
-
-  if echoed = payload then
-    IO.println "OK"
-  else
-    IO.eprintln "MISMATCH"
+  client.sendMessage payload
+  match ← client.recvMessage? with
+  | none =>
+    client.close
+    IO.eprintln "[client] EOF awaiting echo"
     IO.Process.exit 1
+  | some echoed =>
+    client.close
+    IO.println s!"[client] sent {payload.size}, echoed back {echoed.size}"
+    let _ ← IO.wait serverTask
+    if echoed = payload then
+      IO.println "OK"
+    else
+      IO.eprintln "MISMATCH"
+      IO.Process.exit 1

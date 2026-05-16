@@ -139,6 +139,26 @@ LEAN_EXPORT lean_obj_res ocapnlean_ed25519_sign(b_lean_obj_arg sk_arr,
 }
 
 /*------------------------------------------------------------------*/
+/* Random bytes                                                     */
+/*------------------------------------------------------------------*/
+
+/* `randomBytes : USize -> IO ByteArray`
+ * Returns `n` bytes from libsodium's CSPRNG (`randombytes_buf`).
+ * Used for nonces (e.g. the WebSocket designator-auth challenge). */
+LEAN_EXPORT lean_obj_res ocapnlean_random_bytes(size_t n, lean_obj_arg /*io*/) {
+  lean_obj_res ba = lean_alloc_sarray(1, n, n);
+  if (n == 0) return lean_io_result_mk_ok(ba);
+  if (ensure_sodium() < 0) {
+    /* libsodium init failed; surface a Lean IO error so callers can
+     * notice rather than silently get zeros. */
+    return lean_io_result_mk_error(
+        lean_mk_io_user_error(lean_mk_string("randomBytes: sodium_init failed")));
+  }
+  randombytes_buf(lean_sarray_cptr(ba), n);
+  return lean_io_result_mk_ok(ba);
+}
+
+/*------------------------------------------------------------------*/
 /* Ed25519 verify                                                   */
 /*------------------------------------------------------------------*/
 

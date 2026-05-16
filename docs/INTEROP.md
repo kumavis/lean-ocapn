@@ -232,7 +232,7 @@ NetLayerException: Connection is closed. Cannot send message.
 
 | Impl | Framing on `tcp-testing-only` | Conforms to Python ref |
 |---|---|---|
-| ocapn-lean (`OcapnLean/Captp/Run.lean:66`)         | raw Syrup | ✅ |
+| ocapn-lean (`OcapnLean/Captp/Run.lean`)            | raw Syrup (default), `--frame netstring` opt-in | ✅ |
 | @endo/ocapn (`src/netlayers/tcp-test-only.js:32`)  | raw Syrup | ✅ |
 | Python ref (`netlayers/base.py:83`)                | raw Syrup | ✅ |
 | Ridley dobjects (`tcp_testing_net_layer.dart:159`) | netstring `len:bytes` | ❌ |
@@ -246,11 +246,106 @@ side (drop the netstring prefix) would restore interop without
 affecting Ridley's other netlayers (which can keep whatever framing
 they need).
 
-Workaround we did *not* adopt: add a `--frame=netstring` flag to
-our `Captp.Client` so we can drive Ridley specifically. Rejected
-for now — same reasoning as the other disagreements, our codec
-stays spec/de-facto-conformant. Could revisit if there's appetite
-for a one-off Ridley interop test.
+**What we did.** Added `Framing = .raw | .netstring` to
+`OcapnLean/Captp/Run.lean` and plumbed an opt-in `--frame
+netstring` flag through `client-vs-external` and `ocapn-server`.
+Default stays `.raw` — every other peer (Python suite, Endo,
+Goblins, ocapn-lean self) keeps working unchanged, including the
+24/24 conformance run.
+
+**Verified end-to-end against real Ridley** (2026-05-16) using a
+small Dart probe in `scripts/diagnostics/ridley-tcp-test-server.dart`
+that spins up Ridley's own `TCPTestingNetLayer`. Recipe:
+
+```sh
+# In one shell (inside the Ridley submodule, after dart pub get and
+# placing the libsodium path file as the script comment describes):
+dart run ridley-tcp-test-server.dart --port 22047
+
+# In another:
+lake exe client-vs-external -- --port 22047 \
+  --frame netstring --captp-version 0.1 --hints false \
+  --handshake-only
+```
+
+Both sides report success: `[external-smoke] handshake ok` on the
+Lean side and
+`PASS: framing + handshake interop verified end-to-end` on Ridley's.
+The handshake exercises Ridley's netstring de-framer, Syrup
+decoder, version check, and Ed25519 signature verification — and
+the reverse path through framing for our reply. All three flags are
+needed because Ridley diverges from the de-facto convention on
+three orthogonal points (framing here, `captpVersion` 0.1 vs 1.0,
+and the hints normalisation noted in Disagreement 3).
+
+The flag is local to `tcp-testing-only`-style transports; it does
+not change the spec-defined wire format anywhere else.
+
+## Goblins WebSocket interop (working as of 2026-05-16)
+
+Lean ↔ Goblins is verified end-to-end over the WebSocket netlayer
+(`(goblins ocapn netlayer websocket)` on the Goblins side, our
+`OcapnLean.Netlayer.Ws` on ours). This routes around the
+testuds silent-handshake bug described below — WebSocket setup
+doesn't deadlock the vat dispatcher the way `^testuds-netlayer`
+does, so it works fine from a standalone Guile script.
+
+**Stack on each side:**
+
+* Wire: plain TCP, then the RFC 6455 client/server handshake.
+  Lean's TCP socket is plain POSIX (`c/ws.c`); RFC 6455 frame
+  encoding / masking is delegated to **libwslay**. Goblins uses
+  Guile's `(web socket)` modules.
+* OCapN designator-auth: long-lived Ed25519 designator keypair
+  per peer. Client sends a fresh challenge over the WebSocket;
+  server signs it with the designator key and replies; client
+  verifies against the public key embedded in the peer's
+  `ocapn://` URI. **Two wire shapes coexist in the wild**:
+  Goblins ≤ v0.17 (and the version nixpkgs currently ships) uses
+  raw 64-byte challenges; v0.18+ (and Endo) uses a typed
+  `<init:peer-auth …>` record. Both are implemented in
+  `OcapnLean.Netlayer.Ws.Authenticated` — call `connectLegacy` for
+  the former, `connect` for the latter. See the v0.18 commit
+  `61c0247f4` "Make websocket netlayer sign typed record not raw
+  bytes" in the upstream Goblins history.
+* CapTP `op:start-session` and everything above: the same code we
+  use over TCP and UDS (`Captp.Client.handshake`, `Captp.Session`,
+  etc.). Reused unchanged thanks to the message-oriented
+  `Netlayer` abstraction.
+
+**Reproducer** (also wired into CI as the `interop-goblins-ws`
+job):
+
+```sh
+# Shell 1 — start the Goblins peer:
+nix-shell -p guile guile-goblins guile-fibers --command \
+  "GUILE_AUTO_COMPILE=0 guile \
+    scripts/diagnostics/goblins-ws-server.scm 22090"
+
+# Shell 1 prints (single line):
+# goblins-ws-ready designator-hex=8e9a17… port=22090
+
+# Shell 2 — Lean client:
+lake exe client-vs-guile-ws -- --port 22090 \
+  --designator-hex 8e9a17... --auth legacy
+```
+
+Output ends with `OK` on success. The exchange validates:
+
+  1. RFC 6455 client/server handshake (Sec-WebSocket-Key /
+     Sec-WebSocket-Accept via SHA-1 + base64 in `c/ws.c`).
+  2. libwslay binary-frame encode/decode + client masking.
+  3. The Goblins-v0.17 designator-auth dance (raw 64-byte
+     challenge → syrup-encoded `<sig-val …>` reply → Ed25519
+     verification against the published designator pubkey).
+  4. The Lean `Netlayer` interface returning a working
+     post-auth message-oriented endpoint suitable for CapTP.
+
+The Lean-side WebSocket implementation is approximately 500 lines
+of C in `c/ws.c` (SHA-1 + base64 + HTTP upgrade + wslay glue) plus
+~250 lines of Lean (`OcapnLean.Ws`, `OcapnLean.Netlayer.Ws`, the
+`Authenticated` auth dance). New build dep: `libwslay`
+(nixpkgs `wslay-1.1.1`, Ubuntu `libwslay-dev`).
 
 ### Goblins testuds, current state
 
@@ -347,13 +442,17 @@ stays spec-conformant.
   a writable Ridley copy, then `lake exe client-vs-external --port
   22047` from ocapn-lean — Ridley throws `NetLayerException(
   'Invalid message framing.')` at the very first incoming byte
-  because we don't emit a `len:` prefix.
+  because raw Syrup doesn't emit a `len:` prefix.
   Suggested fix: in
   `lib/src/net_layers/tcp_testing_net_layer/tcp_testing_net_layer.dart`,
   switch the read side (lines 105-145) and the write side
   (lines 159-160) to raw Syrup framing — i.e., delegate to the
   same `syrup-read` / `syrup-write` loop other implementations use.
   No other Ridley netlayer affected.
+
+  In the meantime, ocapn-lean ships an opt-in `--frame netstring`
+  flag (see Disagreement 4 above) that lets `client-vs-external`
+  and `ocapn-server` interop with Ridley as it stands.
 
 * **`codeberg.org/spritely/goblins`** — `testuds` peer doesn't reply
   to inbound `op:start-session`. Reproducer:
@@ -395,9 +494,15 @@ stays spec-conformant.
 
 * This validates ocapn-lean against the Python reference *and*
   against an independent TypeScript implementation. Client-side
-  interop against Goblins and Ridley over real wire remains blocked
-  by impl-specific bugs (not by ocapn-lean): Goblins by the testuds
-  silent-handshake runtime issue (see above); Ridley by Disagreement
-  4 (netstring framing on `tcp-testing-only`). Both are documented
-  with reproducers in this repo and upstream-issue drafts pending
-  cross-validation before filing.
+  interop against Ridley over real wire is now verified end-to-end:
+  Lean handshakes successfully against Ridley's `TCPTestingNetLayer`
+  via the opt-in `--frame netstring --captp-version 0.1 --hints
+  false` combination (see Disagreement 4 above for the recipe).
+  Default behaviour is unchanged — the spec/de-facto-conformant
+  codec stays put; the flags are local to driving Ridley.
+  Goblins is now interop-verified end-to-end over WebSocket
+  (`scripts/diagnostics/goblins-ws-server.scm` + `lake exe
+  client-vs-guile-ws --auth legacy`). The testuds path remains
+  blocked by the silent-handshake runtime issue (see above) with
+  a reproducer in this repo and an upstream issue draft pending
+  cross-validation; the WebSocket route sidesteps that bug.

@@ -181,14 +181,28 @@ proof against `Captp.Spec`.
       `projects/ocapn-spec/draft-specifications/Locators.md`.
 - [x] **Round-trip theorems** for peer locator and sturdyref:
       `fromValueExt (toValueExt p) = some p`, both proved.
+- [x] **Sturdyref `fetch` semantics layer** —
+      `OcapnLean/Captp/SturdyRefClient.lean` exposes
+      `SturdyRefClient.fetch : SturdyRef → TransportProfile → IO
+      (Session × Nat)`. Resolves `host`/`port` hints to a
+      `SocketAddress`, runs `Captp.Client.handshake`, sends
+      `[fetch swiss]` on `<desc:export 0>`, awaits the fulfill, and
+      returns the imported object's position alongside the live
+      session. `TransportProfile.default` matches the de-facto
+      convention; `TransportProfile.ridley` bundles the Ridley
+      framing / version / hints deviations. Smoke test at
+      `scripts/SturdyRefSmoke.lean` (`lake exe sturdyref-smoke`)
+      drives the layer against a self-hosted server end-to-end.
 - [ ] **Deferred:** URI parser/serializer
       (`ocapn://<designator>.<transport>[?hints]…/s/<swiss>`). Needs
       RFC3986 escaping work; the in-band Syrup view above is what
-      the rest of the codebase exercises.
-- [ ] **Deferred:** sturdyref persistence + `fetch` semantics layer.
-      Depends on `Captp.Session` machinery already in place;
-      essentially wiring the `SturdyRef.peer` + `swiss` into an
-      outbound `op:deliver <fetch swiss>` from `Captp.Client`.
+      the rest of the codebase exercises. `SturdyRef.toUri`
+      already covers the URI-safe character subset (no
+      percent-encoding); the deferred work is the parser direction
+      and the full escape table.
+- [ ] **Deferred:** sturdyref persistence (on-disk store, with
+      key-rotation policy). Orthogonal to the `fetch` layer above
+      (which just consumes an in-memory `SturdyRef`).
 
 ## Milestone M10 — Hardening + paper _(2026-10-13)_
 

@@ -53,12 +53,19 @@ namespace Session
 
 /-- Open a TCP connection to `addr`, generate a fresh keypair, and
 return a `Session` with all counters initialised. The handshake is
-*not* run yet — call `handshake` next. Optional `captpVersion`
-overrides the default `"1.0"` (use e.g. `"goblins-0.16"` for a
-Goblins peer). -/
+*not* run yet — call `handshake` next.
+
+Optional `captpVersion` overrides the default `"1.0"` (use e.g.
+`"goblins-0.16"` for a Goblins peer).
+
+Optional `framing` overrides the default `.raw` (raw Syrup back-to-
+back, the de-facto convention). Pass `.netstring` to drive Ridley
+dobjects on `tcp-testing-only`; see `docs/INTEROP.md` "Disagreement
+4". -/
 def connect (addr : SocketAddress) (ourLocation : ValueExt)
-    (captpVersion : String := "1.0") : IO Session := do
-  let net ← Netlayer.Tcp.connect addr
+    (captpVersion : String := "1.0")
+    (framing : Netlayer.Tcp.Framing := .raw) : IO Session := do
+  let net ← Netlayer.Tcp.connect addr framing
   let conn ← FramedConn.of net
   let (pk, sk) ← Crypto.ed25519Keypair
   pure { conn, ourLocation, ourPubkey := pk, ourSecret := sk,

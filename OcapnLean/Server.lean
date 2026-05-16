@@ -32,6 +32,18 @@ def parsePort : List String → UInt16
   | "--port" :: n :: _       => (n.toNat?.getD 22045).toUInt16
   | _ :: rest                => parsePort rest
 
+/-- Parse `--frame raw|netstring` out of the argv tail. Default `.raw`
+(spec/de-facto convention). Pass `--frame netstring` to accept Ridley
+dobjects clients on `tcp-testing-only`; see `docs/INTEROP.md`
+"Disagreement 4". -/
+def parseFrame : List String → IO Netlayer.Tcp.Framing
+  | []                            => pure .raw
+  | "--frame" :: "netstring" :: _ => pure .netstring
+  | "--frame" :: "raw"       :: _ => pure .raw
+  | "--frame" :: other       :: _ =>
+      throw (IO.userError s!"--frame: expected 'raw' or 'netstring', got '{other}'")
+  | _ :: rest                     => parseFrame rest
+
 /-- Our "location" — the `<ocapn-peer transport designator hints>` record
 the spec defines (`projects/ocapn-spec/draft-specifications/Locators.md`).
 Per spec §Peer Syrup Serialization the `hints` field must be `struct | false`.
@@ -51,7 +63,8 @@ the inbound handshake can detect a crossed-hellos race against any of
 our pending outbound sessions. -/
 partial def acceptLoop
     (acceptOne : IO Netlayer) (registry : Bootstrap.Registry)
-    (loc : ValueExt) (outboundReg : Session.OutboundRegistry)
+    (loc : ValueExt)
+    (outboundReg : Session.OutboundRegistry)
     (gifts : Session.GiftsTable)
     (usedHandoffCounts : Session.HandoffCountSet)
     (pendingWithdraws : Session.PendingWithdrawTable)
@@ -69,9 +82,11 @@ partial def acceptLoop
 
 def main (args : List String) : IO Unit := do
   let port := parsePort args
+  let framing ← parseFrame args
   let addr : SocketAddress := Tcp.v4 Tcp.loopback port
-  IO.println s!"ocapn-server: listening on 127.0.0.1:{port}"
-  let acceptOne ← Tcp.listen addr 32
+  let frameLabel := match framing with | .raw => "raw" | .netstring => "netstring"
+  IO.println s!"ocapn-server: listening on 127.0.0.1:{port} (framing={frameLabel})"
+  let acceptOne ← Tcp.listen addr 32 framing
   let registry := Bootstrap.defaultRegistry
   let loc := ourLocation port
   let outboundReg ← Session.OutboundRegistry.create

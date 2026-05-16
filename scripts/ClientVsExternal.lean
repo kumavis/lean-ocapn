@@ -28,6 +28,10 @@ port 22046, then run
 
 against it. The same script is also a small standalone integration
 test against `ocapn-lean` itself.
+
+Pass `--frame netstring` to drive Ridley dobjects, which prefix each
+frame with `<n>:` instead of speaking the de-facto raw-Syrup
+convention. See `docs/INTEROP.md` "Disagreement 4".
 -/
 
 open OcapnLean OcapnLean.Captp OcapnLean.Captp.Session OcapnLean.Syrup
@@ -39,21 +43,74 @@ def parsePort : List String → UInt16
   | "--port" :: n :: _       => (n.toNat?.getD 22082).toUInt16
   | _ :: rest                => parsePort rest
 
+def parseFrame : List String → IO Netlayer.Tcp.Framing
+  | []                                => pure .raw
+  | "--frame" :: "netstring" :: _     => pure .netstring
+  | "--frame" :: "raw"       :: _     => pure .raw
+  | "--frame" :: other       :: _     =>
+      throw (IO.userError s!"--frame: expected 'raw' or 'netstring', got '{other}'")
+  | _ :: rest                         => parseFrame rest
+
+/-- `--captp-version V` overrides the version we send in
+`op:start-session`. Default `"1.0"` (Python ref / Endo / ocapn-lean).
+Ridley dobjects expects `"0.1"`. -/
+def parseCaptpVersion : List String → String
+  | []                              => "1.0"
+  | "--captp-version" :: v :: _     => v
+  | _ :: rest                       => parseCaptpVersion rest
+
+/-- `--handshake-only` stops after the handshake completes. Useful for
+peers (Ridley) that don't expose the test-suite swissnums. -/
+def parseHandshakeOnly : List String → Bool
+  | []                          => false
+  | "--handshake-only" :: _     => true
+  | _ :: rest                   => parseHandshakeOnly rest
+
+/-- `--hints empty-dict|false` controls the third field of our
+`<ocapn-peer …>` locator. Default `empty-dict` matches Endo's strict
+parser. Pass `false` for Ridley dobjects: Ridley accepts both shapes
+on parse but normalises empty-hints to `false` during signature
+re-encoding, so an empty-dict locator fails its signature check.
+See `docs/INTEROP.md` "Disagreement 3". -/
+inductive HintsShape where | emptyDict | falseLit
+deriving Repr
+
+def parseHints : List String → IO HintsShape
+  | []                                 => pure .emptyDict
+  | "--hints" :: "empty-dict" :: _     => pure .emptyDict
+  | "--hints" :: "false"      :: _     => pure .falseLit
+  | "--hints" :: other        :: _     =>
+      throw (IO.userError s!"--hints: expected 'empty-dict' or 'false', got '{other}'")
+  | _ :: rest                          => parseHints rest
+
 def main (args : List String) : IO Unit := do
   let port := parsePort args
+  let framing ← parseFrame args
+  let captpVersion := parseCaptpVersion args
+  let handshakeOnly := parseHandshakeOnly args
+  let hintsShape ← parseHints args
   let addr : SocketAddress := Tcp.v4 Tcp.loopback port
-  IO.println s!"[external-smoke] connecting to 127.0.0.1:{port}"
+  let frameLabel := match framing with | .raw => "raw" | .netstring => "netstring"
+  let hintsLabel := match hintsShape with | .emptyDict => "empty-dict" | .falseLit => "false"
+  IO.println s!"[external-smoke] connecting to 127.0.0.1:{port} (framing={frameLabel}, captp={captpVersion}, hints={hintsLabel})"
 
+  let hintsVal : ValueExt := match hintsShape with
+    | .emptyDict => .dict []
+    | .falseLit  => .bool false
   let clientLoc : ValueExt :=
     .record (.sym "ocapn-peer".toUTF8.toList)
       [ .sym "tcp-testing-only".toUTF8.toList
       , .str "extsmokebeefbeefbeefbeefbeefbeef".toUTF8.toList
-      , .dict []                                 -- Endo's strict syrup
-                                                 -- requires a dict here.
+      , hintsVal
       ]
   let s ← Captp.Client.Session.connect addr clientLoc
+            (captpVersion := captpVersion) (framing := framing)
   Captp.Client.handshake s
   IO.println "[external-smoke] handshake ok"
+  if handshakeOnly then
+    Captp.Client.Session.close s
+    IO.println "OK"
+    return ()
 
   let fetchRmd ← Captp.Client.fetch s Captp.Bootstrap.echoGcSwiss
   let echoRefVal ← Captp.Client.expectFulfill s fetchRmd

@@ -21,6 +21,20 @@ def libsodium.defaultLibDir : String :=
   -- `1hbn13…` path is the 32-bit i386 build and would fail to link.
   "/nix/store/z4yz8jy4hipl0mvyj8dy77s5brajzviv-libsodium-1.0.21-unstable-2026-03-29/lib"
 
+/-! ## wslay paths
+
+`c/ws.c` links against libwslay (an RFC 6455 frame
+encoder/decoder). Same nix-store-path / env-override pattern as
+libsodium above. On Ubuntu CI, set `WSLAY_INCLUDE` and
+`WSLAY_LIB` to `/usr/include` and `/usr/lib/x86_64-linux-gnu`
+respectively. -/
+
+def wslay.defaultIncludeDir : String :=
+  "/nix/store/dwpwp1yrv4293vdcnhm0fk22ynqskmfs-wslay-1.1.1/include"
+
+def wslay.defaultLibDir : String :=
+  "/nix/store/dwpwp1yrv4293vdcnhm0fk22ynqskmfs-wslay-1.1.1/lib"
+
 /-- Sync env read for use in `moreLinkArgs`. The
 `@[implemented_by]` indirection makes the `unsafeBaseIO` lookup
 fire exactly once at module load — cleaner than scattering env
@@ -46,12 +60,29 @@ def libsodium.libDir : IO String := do
   | some s => pure s
   | none   => pure libsodium.defaultLibDir
 
+def wslay.libDirSync : String :=
+  libsodium.readEnvOr "WSLAY_LIB" wslay.defaultLibDir
+
+def wslay.includeDir : IO String := do
+  match ← IO.getEnv "WSLAY_INCLUDE" with
+  | some s => pure s
+  | none   => pure wslay.defaultIncludeDir
+
+def wslay.libDir : IO String := do
+  match ← IO.getEnv "WSLAY_LIB" with
+  | some s => pure s
+  | none   => pure wslay.defaultLibDir
+
 input_file cryptoShimSrc where
   path := "c" / "crypto.c"
   text := true
 
 input_file udsShimSrc where
   path := "c" / "uds.c"
+  text := true
+
+input_file wsShimSrc where
+  path := "c" / "ws.c"
   text := true
 
 /-- libsodium link args, used wherever the FFI shim is pulled in.
@@ -75,15 +106,31 @@ def sodiumLinkArgs : Array String := #[
   "-Wl,--allow-shlib-undefined"
 ]
 
+/-- libwslay link args. Same shape as `sodiumLinkArgs` — pass the
+`.so` as an absolute file to keep the linker's `-L` search path
+clean. CI sets `WSLAY_LIB=/usr/lib/x86_64-linux-gnu` and we resolve
+`libwslay.so` from there. -/
+def wslayLinkArgs : Array String := #[
+  s!"{wslay.libDirSync}/libwslay.so",
+  s!"-Wl,-rpath,{wslay.libDirSync}"
+]
+
+/-- Link args for any target that uses the FFI shim (libsodium +
+wslay). -/
+def shimLinkArgs : Array String := sodiumLinkArgs ++ wslayLinkArgs
+
 /-- Build the C shim into a static archive (`libocapnLeanShim.a`).
 This is what executables and other static consumers link against. -/
 extern_lib libocapnLeanShim pkg := do
   let cryptoO := pkg.buildDir / "c" / "crypto.o"
   let udsO    := pkg.buildDir / "c" / "uds.o"
+  let wsO     := pkg.buildDir / "c" / "ws.o"
   let aFile := pkg.staticLibDir / nameToStaticLib "ocapnLeanShim"
   let cryptoSrcJob ← cryptoShimSrc.fetch
   let udsSrcJob ← udsShimSrc.fetch
+  let wsSrcJob ← wsShimSrc.fetch
   let incDir ← libsodium.includeDir
+  let wsIncDir ← wslay.includeDir
   let cryptoFlags := #[
     "-std=c11",
     "-fPIC",
@@ -99,9 +146,18 @@ extern_lib libocapnLeanShim pkg := do
     "-Wall",
     "-I", (← getLeanIncludeDir).toString
   ]
+  let wsFlags := #[
+    "-std=c11",
+    "-fPIC",
+    "-O2",
+    "-Wall",
+    "-I", (← getLeanIncludeDir).toString,
+    "-I", wsIncDir
+  ]
   let cryptoOJob ← buildO cryptoO cryptoSrcJob cryptoFlags
   let udsOJob ← buildO udsO udsSrcJob udsFlags
-  buildStaticLib aFile #[cryptoOJob, udsOJob]
+  let wsOJob ← buildO wsO wsSrcJob wsFlags
+  buildStaticLib aFile #[cryptoOJob, udsOJob, wsOJob]
 
 /-- FFI-only lib. -/
 @[default_target]
@@ -109,7 +165,7 @@ lean_lib OcapnLeanCrypto where
   srcDir := "."
   roots := #[`OcapnLean.Crypto]
   precompileModules := true
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 /-- Precompiled UDS FFI lib. Same trick as OcapnLeanCrypto: the
 extern symbols live in the shared `libocapnLeanShim` static archive
@@ -120,6 +176,17 @@ lean_lib OcapnLeanUds where
   srcDir := "."
   roots := #[`OcapnLean.Uds]
   precompileModules := true
+
+/-- Precompiled WebSocket FFI lib. Same pattern as `OcapnLeanUds`:
+extern symbols (`ocapnlean_ws_*`) live in `libocapnLeanShim` from
+`c/ws.c`. `precompileModules` makes Lake link them downstream;
+`wslayLinkArgs` brings libwslay.so along. -/
+@[default_target]
+lean_lib OcapnLeanWs where
+  srcDir := "."
+  roots := #[`OcapnLean.Ws]
+  precompileModules := true
+  moreLinkArgs := wslayLinkArgs
 
 /-- Main library — every `OcapnLean.*` module except `Crypto`,
 which lives in the precompiled `OcapnLeanCrypto` lib above. -/
@@ -134,6 +201,7 @@ lean_lib OcapnLean where
     `OcapnLean.Netlayer,
     `OcapnLean.Netlayer.Tcp,
     `OcapnLean.Netlayer.Uds,
+    `OcapnLean.Netlayer.Ws,
     `OcapnLean.Syrup.Extended,
     `OcapnLean.Syrup.RoundTripExt,
     `OcapnLean.Locators,
@@ -152,6 +220,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Bootstrap,
     `OcapnLean.Captp.Session,
     `OcapnLean.Captp.Client,
+    `OcapnLean.Captp.SturdyRefClient,
     `OcapnLean.Test.Interop
   ]
 
@@ -163,7 +232,7 @@ pass through the libsodium link args. -/
 @[default_target]
 lean_exe «ocapn-server» where
   root := `OcapnLean.Server
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 /-! ## Smoke tests packaged as executables
 
@@ -177,39 +246,59 @@ the executable at build time. Run with `lake exe <name>`. -/
 lean_exe «crypto-smoke» where
   root := `scripts.CryptoSmoke
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «session-handshake-smoke» where
   root := `scripts.SessionHandshakeSmoke
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «enlivener-smoke» where
   root := `scripts.EnlivenerSmoke
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «client-smoke» where
   root := `scripts.ClientSmoke
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «client-vs-external» where
   root := `scripts.ClientVsExternal
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «uds-smoke» where
   root := `scripts.UdsSmoke
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «client-vs-uds» where
   root := `scripts.ClientVsUds
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
+
+lean_exe «sturdyref-smoke» where
+  root := `scripts.SturdyRefSmoke
+  srcDir := "."
+  moreLinkArgs := shimLinkArgs
+
+lean_exe «ws-smoke» where
+  root := `scripts.WsSmoke
+  srcDir := "."
+  moreLinkArgs := shimLinkArgs
+
+lean_exe «ws-auth-smoke» where
+  root := `scripts.WsAuthSmoke
+  srcDir := "."
+  moreLinkArgs := shimLinkArgs
+
+lean_exe «client-vs-guile-ws» where
+  root := `scripts.ClientVsGuileWs
+  srcDir := "."
+  moreLinkArgs := shimLinkArgs
 
 lean_exe «uds-probe» where
   root := `scripts.UdsProbe
   srcDir := "."
-  moreLinkArgs := sodiumLinkArgs
+  moreLinkArgs := shimLinkArgs
