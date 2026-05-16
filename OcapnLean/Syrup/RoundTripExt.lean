@@ -1,4 +1,5 @@
 import OcapnLean.Syrup.Extended
+import Std.Tactic.BVDecide
 
 /-!
 # Syrup — pass-invariance for the extended codec
@@ -362,6 +363,63 @@ theorem decodeExt_encodeExt_sym (s : List UInt8) :
             (by omega)
   simpa using h
 
+/-! ## Float64 pass-invariance
+
+`.float64 bits` is a fixed-shape `D` + 8 bytes. The decoder
+matches on the `0x44` byte (after rejecting `t`/`f`/`[`/`{`) and
+reads exactly 8 more, reassembling them into a big-endian
+`UInt64`. The pivotal step — that the BE split + reassemble is
+the identity on a 64-bit word — is a bitvector tautology and
+closes by `bv_decide`. -/
+
+/-- BE-split then reassemble is the identity on `UInt64`. -/
+private theorem uint64_be_roundtrip (n : UInt64) :
+    ((n >>> 56).toUInt8.toUInt64 <<< 56) |||
+    ((n >>> 48).toUInt8.toUInt64 <<< 48) |||
+    ((n >>> 40).toUInt8.toUInt64 <<< 40) |||
+    ((n >>> 32).toUInt8.toUInt64 <<< 32) |||
+    ((n >>> 24).toUInt8.toUInt64 <<< 24) |||
+    ((n >>> 16).toUInt8.toUInt64 <<< 16) |||
+    ((n >>>  8).toUInt8.toUInt64 <<<  8) |||
+     n.toUInt8.toUInt64                    = n := by
+  bv_decide
+
+/-- Fueled form: `.float64 bits` round-trips with arbitrary tail. -/
+theorem decodeExtFuel_encodeExt_float64_app
+    (bits : UInt64) (rest : List UInt8) (fuel : Nat)
+    (hf : 1 ≤ fuel) :
+    decodeExtFuel fuel (encodeExt (.float64 bits) ++ rest)
+      = some (.float64 bits, rest) := by
+  obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by omega⟩
+  -- Unfold encoder + the 8-byte split.
+  show decodeExtFuel (k+1)
+        ((0x44 : UInt8) ::
+         ((bits >>> 56).toUInt8 ::
+          (bits >>> 48).toUInt8 ::
+          (bits >>> 40).toUInt8 ::
+          (bits >>> 32).toUInt8 ::
+          (bits >>> 24).toUInt8 ::
+          (bits >>> 16).toUInt8 ::
+          (bits >>>  8).toUInt8 ::
+           bits.toUInt8 :: [])
+         ++ rest) = some (.float64 bits, rest)
+  -- After `List.cons_append` the head structure becomes the literal
+  -- 9-cons the decoder's 0x44 branch expects. The `bits` arg to the
+  -- output is reassembled from the 8 bytes; show it equals `bits`.
+  simp only [List.cons_append, List.nil_append]
+  show some (ValueExt.float64 _, rest) = some (ValueExt.float64 bits, rest)
+  rw [uint64_be_roundtrip]
+
+/-- Headline: `.float64 bits` round-trips. -/
+theorem decodeExt_encodeExt_float64 (bits : UInt64) :
+    decodeExt (encodeExt (.float64 bits)) = some (.float64 bits, []) := by
+  show decodeExtFuel ((encodeExt (.float64 bits)).length + 1)
+                     (encodeExt (.float64 bits))
+       = some (.float64 bits, [])
+  have h := decodeExtFuel_encodeExt_float64_app bits []
+    ((encodeExt (.float64 bits)).length + 1) (by omega)
+  simpa using h
+
 /-! ## Empty-container pass-invariance
 
 The empty `.list` and `.dict` are pure boundary markers — `[]` and `{}`
@@ -521,6 +579,81 @@ theorem ValueExt.size_lt_dict (v : ValueExt) (entries : List ValueExt)
   show v.size < 1 + ValueExt.size.listSize entries
   have hsize : (ValueExt.list entries).size = 1 + ValueExt.size.listSize entries := rfl
   omega
+
+/-- Every encoded value contributes at least one byte. This is the
+slack the cons step of the list-body decoder needs to apply the
+head's IH at strictly positive fuel after the per-iteration
+decrement. -/
+theorem encodeExt_length_pos (v : ValueExt) : 1 ≤ (encodeExt v).length := by
+  cases v with
+  | bool b => cases b <;> simp [encodeExt]
+  | int n =>
+    cases n with
+    | ofNat k =>
+      show 1 ≤ (encodeNat k ++ [0x2b]).length
+      simp
+    | negSucc k =>
+      show 1 ≤ (encodeNat (k+1) ++ [0x2d]).length
+      simp
+  | bytes bs =>
+    show 1 ≤ (encodeNat bs.length ++ [0x3a] ++ bs).length
+    simp; omega
+  | str s =>
+    show 1 ≤ (encodeNat s.length ++ [0x22] ++ s).length
+    simp; omega
+  | sym s =>
+    show 1 ≤ (encodeNat s.length ++ [0x27] ++ s).length
+    simp; omega
+  | list items   => simp [encodeExt]
+  | record l fs  => simp [encodeExt]
+  | dict entries => simp [encodeExt]
+  | float64 _    => simp [encodeExt]
+
+/-! ## Universal round-trip (full proof)
+
+The proof goes by `@ValueExt.rec` with two motives — one for
+values, one for list bodies (the latter packs three conjuncts:
+the round-trip property for `decodeListItemsFuel`,
+`decodeRecordFieldsFuel`, and `decodeDictItemsFuel`, which all
+consume `encodeList items` but differ in their close-byte and
+wrapping). Each case discharges by reduction to a list-body cons
+or to an atomic-case lemma.
+
+The fuel bound `(encodeExt v).length + 1` for values and
+`(encodeList items).length + 2` for list bodies is sufficient
+because `encodeExt_length_pos` gives every item one slack byte
+per cons iteration of the list-body decoder.
+-/
+
+namespace RoundTrip
+
+open Encode.encodeExt (encodeList)
+
+/-- Round-trip property at the value level. -/
+def RTValue (v : ValueExt) : Prop :=
+  ∀ (rest : List UInt8) (fuel : Nat),
+    (encodeExt v).length + 1 ≤ fuel →
+    decodeExtFuel fuel (encodeExt v ++ rest) = some (v, rest)
+
+/-- Round-trip property at the list-body level: a conjunction of the
+list-body, record-body, and dict-body claims. -/
+def RTList (items : List ValueExt) : Prop :=
+  (∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
+    (encodeList items).length + 2 ≤ fuel →
+    decodeListItemsFuel fuel (encodeList items ++ 0x5d :: rest) acc
+      = some (.list (acc.reverse ++ items), rest))
+  ∧
+  (∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
+    (encodeList items).length + 2 ≤ fuel →
+    decodeRecordFieldsFuel fuel (encodeList items ++ 0x3e :: rest) acc
+      = some (acc.reverse ++ items, rest))
+  ∧
+  (∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
+    (encodeList items).length + 2 ≤ fuel →
+    decodeDictItemsFuel fuel (encodeList items ++ 0x7d :: rest) acc
+      = some (.dict (acc.reverse ++ items), rest))
+
+end RoundTrip
 
 /-! ## Foundation for the universal round-trip
 
