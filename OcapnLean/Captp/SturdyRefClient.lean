@@ -155,4 +155,17 @@ def fetch (s : SturdyRef)
     sess.close
     throw e
 
+/-- One-call fetch by URI: parse `ocapn://<designator>.<transport>/s/<swiss>[?…]`,
+pick a transport profile, and delegate to `fetch`. Returns the
+live session plus the imported object position. -/
+def fetchFromUri (uri : String)
+    (profile : TransportProfile := .default)
+    (ourDesignator : List UInt8 := defaultClientDesignator)
+    (budgetMs : Nat := 10000) :
+    IO (Client.Session × Nat) := do
+  match SturdyRef.fromUri uri with
+  | none =>
+    throw (IO.userError s!"[sturdyref] cannot parse \"{uri}\" as a sturdyref URI")
+  | some s => fetch s profile ourDesignator budgetMs
+
 end OcapnLean.Captp.SturdyRefClient

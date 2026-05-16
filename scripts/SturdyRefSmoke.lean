@@ -70,7 +70,7 @@ def main : IO Unit := do
     , swiss := Captp.Bootstrap.echoGcSwiss }
 
   let (s, echoPos) ← Captp.SturdyRefClient.fetch sturdy
-  IO.println s!"[sturdyref-smoke] handshake + fetch ok, echo imported at pos {echoPos}"
+  IO.eprintln s!"[sturdyref-smoke] handshake + fetch ok, echo imported at pos {echoPos}"
 
   -- Drive the imported object: deliver an arg list with an rmd,
   -- expect a fulfill echoing the same args back.
@@ -84,6 +84,25 @@ def main : IO Unit := do
   let expected := Encode.encodeExt (.list myArgs)
   let got := Encode.encodeExt result
   Captp.Client.Session.close s
+
+  -- Round-trip the SturdyRef through `toUri` + `fromUri` as a
+  -- structural check that the URI surface stays in sync with the
+  -- in-memory `SturdyRef`. (A full second-fetch via
+  -- `SturdyRefClient.fetchFromUri` would need an accept loop on
+  -- the server side; the URI parser itself is exercised by
+  -- `OcapnLean.Test.Locators`.)
+  match sturdy.toUri.bind SturdyRef.fromUri with
+  | none =>
+    IO.eprintln "FAIL: SturdyRef did not round-trip through URI"
+    IO.Process.exit 1
+  | some sturdy' =>
+    if sturdy'.peer.transport = sturdy.peer.transport ∧
+       sturdy'.peer.designator = sturdy.peer.designator ∧
+       sturdy'.swiss = sturdy.swiss then
+      pure ()
+    else
+      IO.eprintln "FAIL: parsed SturdyRef differs from original"
+      IO.Process.exit 1
 
   if got = expected then IO.println "OK"
   else
