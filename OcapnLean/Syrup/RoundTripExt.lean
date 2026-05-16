@@ -609,7 +609,17 @@ theorem encodeExt_length_pos (v : ValueExt) : 1 ≤ (encodeExt v).length := by
   | dict entries => simp [encodeExt]
   | float64 _    => simp [encodeExt]
 
-/-! ## Universal round-trip (full proof)
+/-! ## Multi-element container round-trip (deferred — partial work removed)
+
+A WIP singleton-list lemma lived here briefly; it bumped into
+two reduction snags that need a slightly different proof
+recipe than the atomic cases use (the inner `decodeListItemsFuel`
+match doesn't unfold via `show` the way `decodeExtFuel` does,
+and the value-level IH's fuel bound needs a per-constructor
+massage). The cleaner path is the full mutual-recursor proof
+outlined just below. -/
+
+/-! ## Universal round-trip — proof template
 
 The proof goes by `@ValueExt.rec` with two motives — one for
 values, one for list bodies (the latter packs three conjuncts:
@@ -617,13 +627,13 @@ the round-trip property for `decodeListItemsFuel`,
 `decodeRecordFieldsFuel`, and `decodeDictItemsFuel`, which all
 consume `encodeList items` but differ in their close-byte and
 wrapping). Each case discharges by reduction to a list-body cons
-or to an atomic-case lemma.
+or to an atomic-case lemma. The fuel bound `(encodeExt v).length
++ 1` for values and `(encodeList items).length + 2` for list
+bodies is sufficient because `encodeExt_length_pos` gives every
+item one slack byte per cons iteration of the list-body decoder.
 
-The fuel bound `(encodeExt v).length + 1` for values and
-`(encodeList items).length + 2` for list bodies is sufficient
-because `encodeExt_length_pos` gives every item one slack byte
-per cons iteration of the list-body decoder.
--/
+The motive definitions for that proof are below; the proof body
+itself is the deferred follow-up. -/
 
 namespace RoundTrip
 
