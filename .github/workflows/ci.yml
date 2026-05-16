@@ -58,6 +58,7 @@ jobs:
           lake build OcapnLean ocapn-server \
             client-smoke client-vs-external client-vs-uds \
             sturdyref-smoke ws-smoke ws-auth-smoke \
+            syrup-fuzz \
             uds-smoke session-handshake-smoke enlivener-smoke
 
       - name: In-process smoke tests
@@ -70,6 +71,7 @@ jobs:
           ./.lake/build/bin/uds-smoke
           ./.lake/build/bin/ws-smoke
           ./.lake/build/bin/ws-auth-smoke
+          ./.lake/build/bin/syrup-fuzz
 
       - name: Run server in background
         run: |
@@ -377,4 +379,114 @@ jobs:
         with:
           name: goblins-ws-log
           path: goblins-ws.log
+          if-no-files-found: ignore
+
+  verify-veil-fresh:
+    # M10 hardening: re-run every `#check_invariants` from a clean
+    # project build, so the SMT solvers (Z3 / cvc5) are actually
+    # invoked end-to-end on every push. The other CI jobs cache
+    # `.lake/build` and rely on Lake's incremental re-elaboration,
+    # which is correct but trusts the cached `.olean` for unchanged
+    # files. This job caches only `.lake/packages` (the heavy
+    # toolchain deps) and forces project sources to recompile,
+    # which makes Veil re-invoke the SMT pipeline.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsodium-dev libwslay-dev
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null \
+                   | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake *packages* only (deps, not project build)
+        # Pin the cache to `.lake/packages` so dependency oleans
+        # survive but our project's `.lake/build` is empty on every
+        # run — guaranteeing Lean re-elaborates every Veil module
+        # and Z3/cvc5 actually re-discharge each `#check_invariants`.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-pkgs-${{ hashFiles('lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-pkgs-
+
+      - name: Resolve packages (no project build)
+        run: lake update
+
+      - name: Re-run Veil #check_invariants from scratch
+        # `2>&1 | tee verify.log` so we can grep the output for the
+        # success markers afterwards (the SMT discharge prints
+        # `... ✅` for every theorem; if anything's `❌`, the build
+        # fails and the log shows which clause/action broke).
+        run: |
+          set -o pipefail
+          lake build \
+            OcapnLean.Captp.Spec \
+            OcapnLean.Captp.Twoparty \
+            OcapnLean.Captp.CrossedHellos \
+            OcapnLean.Captp.Gc \
+            OcapnLean.Captp.NoForgery \
+            OcapnLean.Captp.NoForgeryForwarded \
+            OcapnLean.Captp.Threeparty \
+            2>&1 | tee verify.log
+
+      - name: Summarise SMT discharge counts
+        # Defensive sanity check: every line of the form
+        # `… ... ✅` is a discharged SMT proof obligation. The
+        # `Trusting the SMT solver for N theorems` warnings sum to
+        # the actual axiom count Veil exports. If either drops to
+        # zero, something is suspiciously empty — fail loudly.
+        run: |
+          GREEN=$(grep -cE '✅' verify.log || true)
+          RED=$(grep -cE '❌' verify.log || true)
+          SUM=$(grep -oE 'Trusting the SMT solver for [0-9]+ theorems' verify.log \
+                | awk '{ s += $6 } END { print s }')
+          echo "::group::Veil discharge summary"
+          echo "  ✅ ticks         : $GREEN"
+          echo "  ❌ ticks         : $RED"
+          echo "  SMT theorems     : $SUM"
+          echo "::endgroup::"
+          if [ "$RED" -gt 0 ]; then
+            echo "FAIL: $RED Veil clauses did not discharge"
+            exit 1
+          fi
+          if [ "$GREEN" -lt 100 ]; then
+            echo "FAIL: only $GREEN ✅ ticks — Veil checks may not be running"
+            exit 1
+          fi
+          if [ -z "$SUM" ] || [ "$SUM" -lt 100 ]; then
+            echo "FAIL: SMT theorem count ($SUM) below the 100-theorem floor"
+            exit 1
+          fi
+
+      - name: Upload verify log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-verify-fresh-log
+          path: verify.log
           if-no-files-found: ignore

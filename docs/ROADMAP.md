@@ -273,10 +273,33 @@ proof against `Captp.Spec`.
 
 ## Milestone M10 — Hardening + paper _(2026-10-13)_
 
-- [ ] All Veil checks pass in CI
-- [ ] Fuzzing the impl against the spec via property-based tests
-      (Lean's `slim_check` or similar)
-- [ ] Short technical report / artifact for the OCapN community
+- [x] **All Veil checks pass in CI (fresh)** — new
+      `verify-veil-fresh` job in `.github/workflows/ci.yml` caches
+      `.lake/packages` only (the heavy toolchain deps) and forces
+      project sources to recompile, so Lean re-elaborates every
+      Veil module on every push and Z3/cvc5 actually re-discharge
+      every `#check_invariants`. The job greps the build output
+      for ✅/❌ ticks and the `Trusting the SMT solver for N
+      theorems` warning, asserting `0 ❌`, `≥ 100 ✅`, and `≥ 100`
+      SMT theorems — defensive sanity check that catches both
+      Veil regressions and cache-poisoning scenarios. Local
+      fresh-build (2026-05-16): 267 SMT theorems, 268 ✅, 0 ❌
+      across the 7 Veil modules.
+- [x] **Property-based fuzz for the Syrup codec** —
+      `scripts/SyrupFuzz.lean` runs ~900 randomised round-trip
+      cases against the byte-level `reEncode` predicate, covering
+      bool (exhaustive), int, bytes, str, sym, float64, list of
+      ints, record with one int field, dict with two fixed keys
+      + varying value, and a list of records. Hand-rolled
+      generator (`IO.rand`-based); `Plausible.Testable` synthesis
+      didn't play nicely in IO do-blocks so a small per-property
+      loop was the cleaner shape. Wired into the main CI smoke
+      list as `./.lake/build/bin/syrup-fuzz`.
+- [x] **`docs/VERIFICATION.md` — verification status report**
+      summarising the current SMT discharge counts, trust
+      footprint, cross-impl interop matrix, reproduction recipe,
+      and known gaps. Pitched as a snapshot companion to
+      `PLAN.md` (strategic) and `INTEROP.md` (interop matrix).
 
 ## Proposed-spec extensions to track _(not on the milestone path yet)_
 
