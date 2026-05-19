@@ -609,35 +609,172 @@ theorem encodeExt_length_pos (v : ValueExt) : 1 ≤ (encodeExt v).length := by
   | dict entries => simp [encodeExt]
   | float64 _    => simp [encodeExt]
 
-/-! ## Multi-element container round-trip (deferred — partial work removed)
+/-! ## Multi-element container round-trip
 
-A WIP singleton-list lemma lived here briefly; it bumped into
-two reduction snags that need a slightly different proof
-recipe than the atomic cases use (the inner `decodeListItemsFuel`
-match doesn't unfold via `show` the way `decodeExtFuel` does,
-and the value-level IH's fuel bound needs a per-constructor
-massage). The cleaner path is the full mutual-recursor proof
-outlined just below. -/
+Closed by mutual induction over `ValueExt` and `List ValueExt`
+using the auto-generated `@ValueExt.rec`. The motive split is
 
-/-! ## Universal round-trip — proof template
+  * `motive_1 v := RTValue v` — value-level round-trip
+  * `motive_2 items := RTListAll items` — the three body-decoder
+    round-trips packaged together (list `]`, record `>`, dict `}`)
 
-The proof goes by `@ValueExt.rec` with two motives — one for
-values, one for list bodies (the latter packs three conjuncts:
-the round-trip property for `decodeListItemsFuel`,
-`decodeRecordFieldsFuel`, and `decodeDictItemsFuel`, which all
-consume `encodeList items` but differ in their close-byte and
-wrapping). Each case discharges by reduction to a list-body cons
-or to an atomic-case lemma. The fuel bound `(encodeExt v).length
-+ 1` for values and `(encodeList items).length + 2` for list
-bodies is sufficient because `encodeExt_length_pos` gives every
-item one slack byte per cons iteration of the list-body decoder.
-
-The motive definitions for that proof are below; the proof body
-itself is the deferred follow-up. -/
+Each cons step in the body decoders reduces via the step lemmas
+below, after observing that the head byte of `encodeExt head`
+is never one of the closing brackets (`]`, `>`, `}`).
+-/
 
 namespace RoundTrip
 
 open Encode.encodeExt (encodeList)
+
+/-! ### Step lemmas — single-step reduction for each body decoder
+when the head byte is not the body's closer. -/
+
+/-- List-body decoder: one cons step (head byte ≠ `]`). -/
+theorem decodeListItemsFuel_cons_step
+    (fuel : Nat) (b : UInt8) (tail : List UInt8) (acc : List ValueExt)
+    (hb : b ≠ 0x5d) :
+    decodeListItemsFuel (fuel + 1) (b :: tail) acc
+      = Option.bind (decodeExtFuel fuel (b :: tail))
+                    (fun p => decodeListItemsFuel fuel p.2 (p.1 :: acc)) := by
+  rw [decodeListItemsFuel.eq_def]
+  by_cases hb' : b = 0x5d
+  · exact absurd hb' hb
+  · simp only []
+    cases h : decodeExtFuel fuel (b :: tail) with
+    | none => rfl
+    | some p => cases p with | mk v rest => rfl
+
+/-- Record-fields decoder: one cons step (head byte ≠ `>`). -/
+theorem decodeRecordFieldsFuel_cons_step
+    (fuel : Nat) (b : UInt8) (tail : List UInt8) (acc : List ValueExt)
+    (hb : b ≠ 0x3e) :
+    decodeRecordFieldsFuel (fuel + 1) (b :: tail) acc
+      = Option.bind (decodeExtFuel fuel (b :: tail))
+                    (fun p => decodeRecordFieldsFuel fuel p.2 (p.1 :: acc)) := by
+  rw [decodeRecordFieldsFuel.eq_def]
+  by_cases hb' : b = 0x3e
+  · exact absurd hb' hb
+  · simp only []
+    cases h : decodeExtFuel fuel (b :: tail) with
+    | none => rfl
+    | some p => cases p with | mk v rest => rfl
+
+/-- Dict-body decoder: one cons step (head byte ≠ `}`). -/
+theorem decodeDictItemsFuel_cons_step
+    (fuel : Nat) (b : UInt8) (tail : List UInt8) (acc : List ValueExt)
+    (hb : b ≠ 0x7d) :
+    decodeDictItemsFuel (fuel + 1) (b :: tail) acc
+      = Option.bind (decodeExtFuel fuel (b :: tail))
+                    (fun p => decodeDictItemsFuel fuel p.2 (p.1 :: acc)) := by
+  rw [decodeDictItemsFuel.eq_def]
+  by_cases hb' : b = 0x7d
+  · exact absurd hb' hb
+  · simp only []
+    cases h : decodeExtFuel fuel (b :: tail) with
+    | none => rfl
+    | some p => cases p with | mk v rest => rfl
+
+/-! ### Head-byte analysis
+
+The first byte of every `encodeExt v` lies in
+`{0x74, 0x66, 0x5b, 0x3c, 0x7b, 0x44}` or is an ASCII digit — and
+none of those is `0x5d` / `0x3e` / `0x7d`. Used to dispatch a
+container's body decoder past the cons step when the head item is
+about to be decoded. -/
+
+theorem encodeExt_head_alt (v : ValueExt) (b : UInt8) (tail : List UInt8)
+    (h : encodeExt v = b :: tail) :
+    b = 0x74 ∨ b = 0x66 ∨ b = 0x5b ∨ b = 0x3c ∨ b = 0x7b ∨ b = 0x44
+    ∨ isDigit b = true := by
+  cases v with
+  | bool x => cases x <;> (simp [encodeExt] at h; obtain ⟨rfl, _⟩ := h; simp)
+  | int n =>
+    cases n with
+    | ofNat k =>
+      have henc : encodeExt (.int (Int.ofNat k)) = encodeNat k ++ [0x2b] := rfl
+      rw [henc] at h
+      obtain ⟨d, ds, hcons⟩ : ∃ d ds, encodeNat k = d :: ds := by
+        rcases h2 : encodeNat k with _ | ⟨d, ds⟩
+        · exact absurd h2 (encodeNat_ne_nil k)
+        · exact ⟨d, ds, rfl⟩
+      rw [hcons] at h
+      simp at h
+      obtain ⟨rfl, _⟩ := h
+      right; right; right; right; right; right
+      exact encodeNat_all_digits k d (hcons ▸ List.mem_cons_self ..)
+    | negSucc k =>
+      have henc : encodeExt (.int (Int.negSucc k)) = encodeNat (k+1) ++ [0x2d] := rfl
+      rw [henc] at h
+      obtain ⟨d, ds, hcons⟩ : ∃ d ds, encodeNat (k+1) = d :: ds := by
+        rcases h2 : encodeNat (k+1) with _ | ⟨d, ds⟩
+        · exact absurd h2 (encodeNat_ne_nil (k+1))
+        · exact ⟨d, ds, rfl⟩
+      rw [hcons] at h
+      simp at h
+      obtain ⟨rfl, _⟩ := h
+      right; right; right; right; right; right
+      exact encodeNat_all_digits (k+1) d (hcons ▸ List.mem_cons_self ..)
+  | bytes bs =>
+    have henc : encodeExt (.bytes bs) = encodeNat bs.length ++ [0x3a] ++ bs := rfl
+    rw [henc] at h
+    obtain ⟨d, ds, hcons⟩ : ∃ d ds, encodeNat bs.length = d :: ds := by
+      rcases h2 : encodeNat bs.length with _ | ⟨d, ds⟩
+      · exact absurd h2 (encodeNat_ne_nil bs.length)
+      · exact ⟨d, ds, rfl⟩
+    rw [hcons] at h
+    simp at h
+    obtain ⟨rfl, _⟩ := h
+    right; right; right; right; right; right
+    exact encodeNat_all_digits bs.length d (hcons ▸ List.mem_cons_self ..)
+  | str s =>
+    have henc : encodeExt (.str s) = encodeNat s.length ++ [0x22] ++ s := rfl
+    rw [henc] at h
+    obtain ⟨d, ds, hcons⟩ : ∃ d ds, encodeNat s.length = d :: ds := by
+      rcases h2 : encodeNat s.length with _ | ⟨d, ds⟩
+      · exact absurd h2 (encodeNat_ne_nil s.length)
+      · exact ⟨d, ds, rfl⟩
+    rw [hcons] at h
+    simp at h
+    obtain ⟨rfl, _⟩ := h
+    right; right; right; right; right; right
+    exact encodeNat_all_digits s.length d (hcons ▸ List.mem_cons_self ..)
+  | sym s =>
+    have henc : encodeExt (.sym s) = encodeNat s.length ++ [0x27] ++ s := rfl
+    rw [henc] at h
+    obtain ⟨d, ds, hcons⟩ : ∃ d ds, encodeNat s.length = d :: ds := by
+      rcases h2 : encodeNat s.length with _ | ⟨d, ds⟩
+      · exact absurd h2 (encodeNat_ne_nil s.length)
+      · exact ⟨d, ds, rfl⟩
+    rw [hcons] at h
+    simp at h
+    obtain ⟨rfl, _⟩ := h
+    right; right; right; right; right; right
+    exact encodeNat_all_digits s.length d (hcons ▸ List.mem_cons_self ..)
+  | list _ => simp [encodeExt] at h; obtain ⟨rfl, _⟩ := h; simp
+  | record _ _ => simp [encodeExt] at h; obtain ⟨rfl, _⟩ := h; simp
+  | dict _ => simp [encodeExt] at h; obtain ⟨rfl, _⟩ := h; simp
+  | float64 _ => simp [encodeExt] at h; obtain ⟨rfl, _⟩ := h; simp
+
+theorem encodeExt_head_ne_rbracket (v : ValueExt) (b : UInt8) (tail : List UInt8)
+    (h : encodeExt v = b :: tail) : b ≠ 0x5d := by
+  intro habs
+  rcases encodeExt_head_alt v b tail h with h1|h1|h1|h1|h1|h1|h1
+  all_goals first | (rw [habs] at h1; cases h1) | (rw [habs] at h1; simp [isDigit] at h1)
+
+theorem encodeExt_head_ne_rangle (v : ValueExt) (b : UInt8) (tail : List UInt8)
+    (h : encodeExt v = b :: tail) : b ≠ 0x3e := by
+  intro habs
+  rcases encodeExt_head_alt v b tail h with h1|h1|h1|h1|h1|h1|h1
+  all_goals first | (rw [habs] at h1; cases h1) | (rw [habs] at h1; simp [isDigit] at h1)
+
+theorem encodeExt_head_ne_rbrace (v : ValueExt) (b : UInt8) (tail : List UInt8)
+    (h : encodeExt v = b :: tail) : b ≠ 0x7d := by
+  intro habs
+  rcases encodeExt_head_alt v b tail h with h1|h1|h1|h1|h1|h1|h1
+  all_goals first | (rw [habs] at h1; cases h1) | (rw [habs] at h1; simp [isDigit] at h1)
+
+/-! ### Motives and main theorem -/
 
 /-- Round-trip property at the value level. -/
 def RTValue (v : ValueExt) : Prop :=
@@ -645,62 +782,336 @@ def RTValue (v : ValueExt) : Prop :=
     (encodeExt v).length + 1 ≤ fuel →
     decodeExtFuel fuel (encodeExt v ++ rest) = some (v, rest)
 
-/-- Round-trip property at the list-body level: a conjunction of the
-list-body, record-body, and dict-body claims. -/
-def RTList (items : List ValueExt) : Prop :=
-  (∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
+/-- Round-trip property for list bodies (`]`-terminated). -/
+def RTListBody (items : List ValueExt) : Prop :=
+  ∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
     (encodeList items).length + 2 ≤ fuel →
     decodeListItemsFuel fuel (encodeList items ++ 0x5d :: rest) acc
-      = some (.list (acc.reverse ++ items), rest))
-  ∧
-  (∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
+      = some (.list (acc.reverse ++ items), rest)
+
+/-- Round-trip property for record fields (`>`-terminated). -/
+def RTRecordFields (items : List ValueExt) : Prop :=
+  ∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
     (encodeList items).length + 2 ≤ fuel →
     decodeRecordFieldsFuel fuel (encodeList items ++ 0x3e :: rest) acc
-      = some (acc.reverse ++ items, rest))
-  ∧
-  (∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
+      = some (acc.reverse ++ items, rest)
+
+/-- Round-trip property for dict bodies (`}`-terminated). -/
+def RTDictBody (items : List ValueExt) : Prop :=
+  ∀ (rest : List UInt8) (fuel : Nat) (acc : List ValueExt),
     (encodeList items).length + 2 ≤ fuel →
     decodeDictItemsFuel fuel (encodeList items ++ 0x7d :: rest) acc
-      = some (.dict (acc.reverse ++ items), rest))
+      = some (.dict (acc.reverse ++ items), rest)
+
+/-- Conjunction used as `motive_2` in the mutual induction. -/
+def RTListAll (items : List ValueExt) : Prop :=
+  RTListBody items ∧ RTRecordFields items ∧ RTDictBody items
+
+/-- **Universal round-trip — value-level.** For every extended Syrup
+value `v`, `decodeExtFuel` consumes exactly `encodeExt v` and leaves
+the trailing `rest` untouched (given sufficient fuel). -/
+theorem encodeExt_rt (v : ValueExt) : RTValue v := by
+  refine @ValueExt.rec
+    (motive_1 := fun v => RTValue v)
+    (motive_2 := fun items => RTListAll items)
+    ?bool ?int ?bytes ?str ?sym ?list ?record ?dict ?float64
+    ?listNil ?listCons v
+  -- bool
+  case bool =>
+    intro b rest fuel _
+    exact decodeExtFuel_encodeExt_bool_app b rest fuel (by omega)
+  -- int
+  case int =>
+    intro n rest fuel hf
+    exact decodeExtFuel_encodeExt_int_app n rest fuel hf
+  -- bytes
+  case bytes =>
+    intro bs rest fuel hf
+    exact decodeExtFuel_encodeExt_bytes_app bs rest fuel hf
+  -- str
+  case str =>
+    intro s rest fuel hf
+    exact decodeExtFuel_encodeExt_str_app s rest fuel hf
+  -- sym
+  case sym =>
+    intro s rest fuel hf
+    exact decodeExtFuel_encodeExt_sym_app s rest fuel hf
+  -- float64
+  case float64 =>
+    intro bits rest fuel _
+    exact decodeExtFuel_encodeExt_float64_app bits rest fuel (by omega)
+  -- list: use RTListBody from motive_2
+  case list =>
+    intro items ih rest fuel hf
+    have henc : encodeExt (.list items) = 0x5b :: encodeList items ++ [0x5d] := rfl
+    rw [henc]
+    obtain ⟨m, rfl⟩ : ∃ m, fuel = m + 1 := ⟨fuel - 1, by omega⟩
+    show decodeExtFuel (m + 1) ((0x5b :: encodeList items ++ [0x5d]) ++ rest)
+          = some (.list items, rest)
+    have hreduce : decodeExtFuel (m + 1) ((0x5b :: encodeList items ++ [0x5d]) ++ rest)
+                 = decodeListItemsFuel m (encodeList items ++ 0x5d :: rest) [] := by
+      show (if (0x5b : UInt8) = 0x74 then _ else
+            if (0x5b : UInt8) = 0x66 then _ else
+            if (0x5b : UInt8) = 0x5b then _ else _) = _
+      rw [if_neg (by decide), if_neg (by decide), if_pos rfl]
+      congr 1
+      simp [List.append_assoc]
+    rw [hreduce]
+    have hflen : (encodeList items).length + 2 ≤ m := by
+      have henclen : (encodeExt (.list items)).length
+                   = (encodeList items).length + 2 := by
+        show (0x5b :: encodeList items ++ [0x5d]).length = _
+        simp
+      omega
+    simpa using ih.1 rest m [] hflen
+  -- record
+  case record =>
+    intro label fields ih_label ih_fields rest fuel hf
+    have henc : encodeExt (.record label fields)
+              = 0x3c :: encodeExt label ++ encodeList fields ++ [0x3e] := rfl
+    rw [henc]
+    obtain ⟨m, rfl⟩ : ∃ m, fuel = m + 1 := ⟨fuel - 1, by omega⟩
+    show decodeExtFuel (m + 1) ((0x3c :: encodeExt label ++ encodeList fields ++ [0x3e]) ++ rest)
+          = some (.record label fields, rest)
+    have hreduce : decodeExtFuel (m + 1)
+                     ((0x3c :: encodeExt label ++ encodeList fields ++ [0x3e]) ++ rest)
+                = (match decodeExtFuel m (encodeExt label ++ encodeList fields ++ [0x3e] ++ rest) with
+                   | none => none
+                   | some (l, r1) =>
+                     match decodeRecordFieldsFuel m r1 [] with
+                     | none => none
+                     | some (fs, r2) => some (.record l fs, r2)) := by
+      show (if (0x3c : UInt8) = 0x74 then _ else
+            if (0x3c : UInt8) = 0x66 then _ else
+            if (0x3c : UInt8) = 0x5b then _ else
+            if (0x3c : UInt8) = 0x7b then _ else
+            if (0x3c : UInt8) = 0x44 then _ else
+            if (0x3c : UInt8) = 0x3c then _ else _) = _
+      rw [if_neg (by decide), if_neg (by decide), if_neg (by decide),
+          if_neg (by decide), if_neg (by decide), if_pos rfl]
+      congr 1 <;> simp [List.append_assoc]
+    rw [hreduce]
+    have hlabel_len : (encodeExt label).length + 1 ≤ m := by
+      have henclen : (encodeExt (.record label fields)).length
+                   = (encodeExt label).length + (encodeList fields).length + 2 := by
+        show (0x3c :: encodeExt label ++ encodeList fields ++ [0x3e]).length = _
+        simp; omega
+      omega
+    have hlabel := ih_label (encodeList fields ++ [0x3e] ++ rest) m hlabel_len
+    have hlabel' : decodeExtFuel m (encodeExt label ++ encodeList fields ++ [0x3e] ++ rest)
+                 = some (label, encodeList fields ++ [0x3e] ++ rest) := by
+      have : encodeExt label ++ encodeList fields ++ [0x3e] ++ rest
+           = encodeExt label ++ (encodeList fields ++ [0x3e] ++ rest) := by
+        simp [List.append_assoc]
+      rw [this]
+      exact hlabel
+    rw [hlabel']
+    simp only []
+    have hfields_len : (encodeList fields).length + 2 ≤ m := by
+      have henclen : (encodeExt (.record label fields)).length
+                   = (encodeExt label).length + (encodeList fields).length + 2 := by
+        show (0x3c :: encodeExt label ++ encodeList fields ++ [0x3e]).length = _
+        simp; omega
+      have := encodeExt_length_pos label
+      omega
+    have hfields := ih_fields.2.1 rest m [] hfields_len
+    have hfields' : decodeRecordFieldsFuel m (encodeList fields ++ [0x3e] ++ rest) []
+                  = some (fields, rest) := by
+      have hrearr : encodeList fields ++ [0x3e] ++ rest
+                  = encodeList fields ++ 0x3e :: rest := by simp
+      rw [hrearr]
+      simpa using hfields
+    rw [hfields']
+  -- dict
+  case dict =>
+    intro entries ih rest fuel hf
+    have henc : encodeExt (.dict entries) = 0x7b :: encodeList entries ++ [0x7d] := rfl
+    rw [henc]
+    obtain ⟨m, rfl⟩ : ∃ m, fuel = m + 1 := ⟨fuel - 1, by omega⟩
+    show decodeExtFuel (m + 1) ((0x7b :: encodeList entries ++ [0x7d]) ++ rest)
+          = some (.dict entries, rest)
+    have hreduce : decodeExtFuel (m + 1) ((0x7b :: encodeList entries ++ [0x7d]) ++ rest)
+                 = decodeDictItemsFuel m (encodeList entries ++ 0x7d :: rest) [] := by
+      show (if (0x7b : UInt8) = 0x74 then _ else
+            if (0x7b : UInt8) = 0x66 then _ else
+            if (0x7b : UInt8) = 0x5b then _ else
+            if (0x7b : UInt8) = 0x7b then _ else _) = _
+      rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos rfl]
+      congr 1
+      simp [List.append_assoc]
+    rw [hreduce]
+    have hflen : (encodeList entries).length + 2 ≤ m := by
+      have henclen : (encodeExt (.dict entries)).length
+                   = (encodeList entries).length + 2 := by
+        show (0x7b :: encodeList entries ++ [0x7d]).length = _
+        simp
+      omega
+    simpa using ih.2.2 rest m [] hflen
+  -- motive_2 nil: RTListAll []
+  case listNil =>
+    have hflen : (encodeList ([] : List ValueExt)).length = 0 := rfl
+    refine ⟨?_, ?_, ?_⟩
+    · intro rest fuel acc hf
+      rw [hflen] at hf
+      show decodeListItemsFuel fuel ([] ++ 0x5d :: rest) acc = _
+      simp only [List.nil_append, List.append_nil]
+      obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by omega⟩
+      rfl
+    · intro rest fuel acc hf
+      rw [hflen] at hf
+      show decodeRecordFieldsFuel fuel ([] ++ 0x3e :: rest) acc = _
+      simp only [List.nil_append, List.append_nil]
+      obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by omega⟩
+      rfl
+    · intro rest fuel acc hf
+      rw [hflen] at hf
+      show decodeDictItemsFuel fuel ([] ++ 0x7d :: rest) acc = _
+      simp only [List.nil_append, List.append_nil]
+      obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by omega⟩
+      rfl
+  -- motive_2 cons: RTListAll (head :: tail) from RTValue head + RTListAll tail
+  case listCons =>
+    intro head tail ih_head ih_tail
+    refine ⟨?_, ?_, ?_⟩
+    · -- RTListBody (head :: tail)
+      intro rest fuel acc hf
+      have henc : encodeList (head :: tail) = encodeExt head ++ encodeList tail := rfl
+      rw [henc]
+      obtain ⟨b, et, hheq⟩ : ∃ b et, encodeExt head = b :: et := by
+        rcases h : encodeExt head with _ | ⟨b, et⟩
+        · have := encodeExt_length_pos head; rw [h] at this; simp at this
+        · exact ⟨b, et, rfl⟩
+      have hne : b ≠ 0x5d := encodeExt_head_ne_rbracket head b et hheq
+      rw [hheq]
+      obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ fuel := hf
+        omega⟩
+      have hrearr : (b :: et ++ encodeList tail) ++ 0x5d :: rest
+                  = b :: (et ++ encodeList tail ++ 0x5d :: rest) := by simp
+      rw [hrearr]
+      rw [decodeListItemsFuel_cons_step k b _ acc hne]
+      have hhead_len : (encodeExt head).length + 1 ≤ k := by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ k + 1 := hf
+        simp at this
+        have := encodeExt_length_pos head
+        omega
+      have hhead := ih_head (encodeList tail ++ 0x5d :: rest) k hhead_len
+      have hhead' : decodeExtFuel k (b :: (et ++ encodeList tail ++ 0x5d :: rest))
+                  = some (head, encodeList tail ++ 0x5d :: rest) := by
+        have : b :: (et ++ encodeList tail ++ 0x5d :: rest)
+             = (b :: et) ++ (encodeList tail ++ 0x5d :: rest) := by simp
+        rw [this, ← hheq]; exact hhead
+      rw [hhead']
+      simp only [Option.bind]
+      have htail_len : (encodeList tail).length + 2 ≤ k := by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ k + 1 := hf
+        simp at this
+        have := encodeExt_length_pos head
+        omega
+      have htail := ih_tail.1 rest k (head :: acc) htail_len
+      have : (head :: acc).reverse ++ tail = acc.reverse ++ head :: tail := by simp
+      rw [this] at htail
+      exact htail
+    · -- RTRecordFields (head :: tail)
+      intro rest fuel acc hf
+      have henc : encodeList (head :: tail) = encodeExt head ++ encodeList tail := rfl
+      rw [henc]
+      obtain ⟨b, et, hheq⟩ : ∃ b et, encodeExt head = b :: et := by
+        rcases h : encodeExt head with _ | ⟨b, et⟩
+        · have := encodeExt_length_pos head; rw [h] at this; simp at this
+        · exact ⟨b, et, rfl⟩
+      have hne : b ≠ 0x3e := encodeExt_head_ne_rangle head b et hheq
+      rw [hheq]
+      obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ fuel := hf
+        omega⟩
+      have hrearr : (b :: et ++ encodeList tail) ++ 0x3e :: rest
+                  = b :: (et ++ encodeList tail ++ 0x3e :: rest) := by simp
+      rw [hrearr]
+      rw [decodeRecordFieldsFuel_cons_step k b _ acc hne]
+      have hhead_len : (encodeExt head).length + 1 ≤ k := by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ k + 1 := hf
+        simp at this
+        have := encodeExt_length_pos head
+        omega
+      have hhead := ih_head (encodeList tail ++ 0x3e :: rest) k hhead_len
+      have hhead' : decodeExtFuel k (b :: (et ++ encodeList tail ++ 0x3e :: rest))
+                  = some (head, encodeList tail ++ 0x3e :: rest) := by
+        have : b :: (et ++ encodeList tail ++ 0x3e :: rest)
+             = (b :: et) ++ (encodeList tail ++ 0x3e :: rest) := by simp
+        rw [this, ← hheq]; exact hhead
+      rw [hhead']
+      simp only [Option.bind]
+      have htail_len : (encodeList tail).length + 2 ≤ k := by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ k + 1 := hf
+        simp at this
+        have := encodeExt_length_pos head
+        omega
+      have htail := ih_tail.2.1 rest k (head :: acc) htail_len
+      have : (head :: acc).reverse ++ tail = acc.reverse ++ head :: tail := by simp
+      rw [this] at htail
+      exact htail
+    · -- RTDictBody (head :: tail)
+      intro rest fuel acc hf
+      have henc : encodeList (head :: tail) = encodeExt head ++ encodeList tail := rfl
+      rw [henc]
+      obtain ⟨b, et, hheq⟩ : ∃ b et, encodeExt head = b :: et := by
+        rcases h : encodeExt head with _ | ⟨b, et⟩
+        · have := encodeExt_length_pos head; rw [h] at this; simp at this
+        · exact ⟨b, et, rfl⟩
+      have hne : b ≠ 0x7d := encodeExt_head_ne_rbrace head b et hheq
+      rw [hheq]
+      obtain ⟨k, rfl⟩ : ∃ k, fuel = k + 1 := ⟨fuel - 1, by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ fuel := hf
+        omega⟩
+      have hrearr : (b :: et ++ encodeList tail) ++ 0x7d :: rest
+                  = b :: (et ++ encodeList tail ++ 0x7d :: rest) := by simp
+      rw [hrearr]
+      rw [decodeDictItemsFuel_cons_step k b _ acc hne]
+      have hhead_len : (encodeExt head).length + 1 ≤ k := by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ k + 1 := hf
+        simp at this
+        have := encodeExt_length_pos head
+        omega
+      have hhead := ih_head (encodeList tail ++ 0x7d :: rest) k hhead_len
+      have hhead' : decodeExtFuel k (b :: (et ++ encodeList tail ++ 0x7d :: rest))
+                  = some (head, encodeList tail ++ 0x7d :: rest) := by
+        have : b :: (et ++ encodeList tail ++ 0x7d :: rest)
+             = (b :: et) ++ (encodeList tail ++ 0x7d :: rest) := by simp
+        rw [this, ← hheq]; exact hhead
+      rw [hhead']
+      simp only [Option.bind]
+      have htail_len : (encodeList tail).length + 2 ≤ k := by
+        have : (encodeExt head ++ encodeList tail).length + 2 ≤ k + 1 := hf
+        simp at this
+        have := encodeExt_length_pos head
+        omega
+      have htail := ih_tail.2.2 rest k (head :: acc) htail_len
+      have : (head :: acc).reverse ++ tail = acc.reverse ++ head :: tail := by simp
+      rw [this] at htail
+      exact htail
 
 end RoundTrip
 
-/-! ## Foundation for the universal round-trip
+/-! ## Top-level universal round-trip + corollaries -/
 
-The four `ValueExt.size_lt_*` lemmas above (over list items,
-record label, record fields, and dict entries) supply the
-strict-sub-term-size order needed by the universal round-trip's
-container cases. They were the missing piece behind the original
-"algebraic obstruction at the singleton-list cons case" comment:
-byte-length induction had no slack between the list body and its
-sole item, so the IH for the head could never fire at strictly
-smaller fuel. With **size-based induction** instead, the IH is
-parameterised by `v.size`, the list's items each have strictly
-smaller size by `size_lt_list`, and the IH fires at the same
-fuel as the surrounding loop (because the IH is universally
-quantified over fuel rather than tied to the byte-length).
+/-- **Top-level universal round-trip.** For every extended Syrup
+value `v`, the round-trip `decodeExt (encodeExt v) = some (v, [])`
+holds. -/
+theorem decodeExt_encodeExt (v : ValueExt) :
+    decodeExt (encodeExt v) = some (v, []) := by
+  show decodeExtFuel ((encodeExt v).length + 1) (encodeExt v) = some (v, [])
+  have h := RoundTrip.encodeExt_rt v [] ((encodeExt v).length + 1) (by omega)
+  simpa using h
 
-The remaining work to close the universal round-trip:
-
-  * Pair the size measure with the mutual recursor `@ValueExt.rec`
-    (which already provides `motive_1 : ValueExt → Sort` and
-    `motive_2 : List ValueExt → Sort` — see the recursor's
-    signature for the constructor-by-constructor IH shape).
-  * Prove the four-conjunct statement (atomic, list-body,
-    record-body, dict-body) by `induction v using @ValueExt.rec`,
-    discharging each leaf with the atomic lemmas already in this
-    module and each container case via the corresponding
-    sub-term-size lemma + the IH on the body.
-  * Once that lands, two short corollaries follow:
-    - **Encoder injectivity** — `encodeExt v₁ = encodeExt v₂ →
-      v₁ = v₂`. Proof: apply `decodeExt` to both sides; the
-      round-trip lemma gives `some (v₁, []) = some (v₂, [])`,
-      hence `v₁ = v₂`.
-    - **Canonicalisation on the decodable subset** — if
-      `decodeExt b₁ = decodeExt b₂ = some (v, [])` then `b₁ = b₂`
-      (every decodable value has a unique encoding). Proof: both
-      `b₁` and `b₂` equal `encodeExt v` by the round-trip in the
-      other direction.
--/
+/-- **Encoder injectivity.** Two values with the same encoding are
+equal. (Follows directly from the round-trip via decode.) -/
+theorem encodeExt_injective {v₁ v₂ : ValueExt}
+    (h : encodeExt v₁ = encodeExt v₂) : v₁ = v₂ := by
+  have h1 := decodeExt_encodeExt v₁
+  have h2 := decodeExt_encodeExt v₂
+  rw [h] at h1
+  rw [h1] at h2
+  simpa using h2
 
 end OcapnLean.Syrup

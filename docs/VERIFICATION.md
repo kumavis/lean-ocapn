@@ -16,7 +16,7 @@ Last updated: 2026-05-16 (commit on `feat/captp-runtime-and-interop`).
 |---|---|---|
 | **CapTP state machine** (Veil) | 8 named safety properties (P1–P8) + 16 supporting invariants, all preserved across all actions. | Z3 / cvc5 via Veil's SMT pipeline (`bv_decide` for the float64 atomic round-trip). |
 | **Refinement: Veil ↔ Lean impl** | `simulates : Impl.State → SpecState → Prop` plus initial / abort / exportNew / importNew lemmas. Lifting lemmas: `bootstrapAtZero_lifts`, `importedFunctional_lifts`, `exportedFunctional_lifts`, `crossedHellosUnique_lifts`, `gcSound_lifts`, `handoffNoReplay_lifts`, plus four vacuous lifts for the spec's promise / listener fields the impl doesn't yet track. | Hand-written Lean tactic scripts. |
-| **Syrup codec** | All 10 atomic value forms (bool, int, bytes, str, sym, float64, list-nil, dict-nil, empty list-body, empty dict-body) round-trip universally. Multi-element containers covered by `native_decide` fixtures + property-fuzz (`scripts/SyrupFuzz.lean`). Size foundation in place for the deferred mutual proof. | Lean (`decide` / `simp` / `bv_decide`). |
+| **Syrup codec** | Universal round-trip `decodeExt (encodeExt v) = some (v, [])` for **all** of `ValueExt` — atomic forms (bool, int, bytes, str, sym, float64) and arbitrarily nested containers (list, record, dict). Encoder injectivity (`encodeExt v₁ = encodeExt v₂ → v₁ = v₂`) follows as a corollary. Property-fuzz (`scripts/SyrupFuzz.lean`) provides a runtime sanity belt. | Lean (`decide` / `simp` / `bv_decide` / `ValueExt.rec` mutual induction). |
 | **Locators** | Round-trip `fromValueExt ∘ toValueExt = some` for `PeerLocator` and `SturdyRef`. URI round-trip with percent-encoded hint values. | Lean (`simp`, `native_decide`). |
 | **Cross-impl interop** | 24/24 against Python ref suite (this impl + @endo/ocapn). End-to-end TCP handshake against Ridley dobjects (with three opt-in flags for documented disagreements). End-to-end WebSocket handshake against Goblins v0.17 (legacy auth) and Goblins v0.18 (typed auth). | Runtime; gated in CI. |
 
@@ -141,12 +141,6 @@ CI does all of this on every push; see
 
 ## Known gaps
 
-* **Universal Syrup round-trip for multi-element containers.**
-  All atomic cases are formally closed; the multi-element list /
-  record / dict cases need a mutual-recursor proof body using
-  the size foundation already in place
-  (`OcapnLean/Syrup/RoundTripExt.lean`). Property fuzz
-  (`syrup-fuzz`) provides runtime coverage in the meantime.
 * **Refinement for promise / listener tables.** The Veil spec
   tracks `promiseResolved`, `promiseBroken`, `listening`, and
   `listenerNotified`; the executable impl doesn't yet, so the

@@ -38,7 +38,7 @@ ocapn-lean/
 │   ├── Syrup.lean              wire codec (bool/int/bytes; universal round-trip proved)
 │   ├── Syrup/
 │   │   ├── Extended.lean       codec (str/sym/list/record/dict; fueled total decoder)
-│   │   └── RoundTripExt.lean   atomic + empty-container round-trip proofs (universal deferred)
+│   │   └── RoundTripExt.lean   universal round-trip `decodeExt ∘ encodeExt = some` for all `ValueExt` (+ encoder injectivity)
 │   ├── Netlayer.lean           abstract `Netlayer { send, recv?, close }`
 │   ├── Netlayer/
 │   │   ├── Tcp.lean            libuv-backed TCP reference netlayer

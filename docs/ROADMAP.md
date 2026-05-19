@@ -33,27 +33,23 @@ round-trip.
       `.list []` / `.dict []`
 - [x] Cross-impl byte-parity vs the Python reference
       (13 `native_decide` fixtures: 9 base + 4 extended)
-- [ ] **Deferred (foundation laid, all atomic cases closed):**
-      universal round-trip proof for the container types
-      (`decodeExt_encodeExt : ∀ v : ValueExt`). `RoundTripExt.lean`
-      now closes all 10 atomic value forms:
-      `decodeExt_encodeExt_{bool, int, bytes, str, sym, float64,
-      list_nil, dict_nil}`. **Float64 was the last hard hold-out**
-      — it needs a 64-bit BE-split-and-reassemble identity which
-      `decide` over `UInt64` would explode on; `bv_decide` from
-      `Std.Tactic.BVDecide` discharges it in milliseconds. Also
-      lays the size foundation: `ValueExt.size`,
-      `encodeExt_length_pos`, and four strict-sub-term-size
-      lemmas (`size_lt_list`, `size_lt_record_label`,
-      `size_lt_record_field`, `size_lt_dict`) — clears the original
-      algebraic obstruction at the singleton-list cons case.
-      Remaining: pair the size measure with `@ValueExt.rec`'s
-      mutual motives, prove the four-conjunct statement (atomic
-      / list-body / record-body / dict-body) over multi-element
-      containers. The atomic-case lemmas plug in directly as the
-      leaves of that recursion. Corollaries (encoder injectivity,
-      decode canonicalisation) follow trivially once the
-      round-trip lands.
+- [x] **Universal round-trip for containers — closed.**
+      `decodeExt_encodeExt : ∀ v : ValueExt, decodeExt (encodeExt v)
+      = some (v, [])` proved over arbitrarily nested
+      `list` / `record` / `dict`. Proof goes via mutual induction
+      on `@ValueExt.rec` with `motive_1 := RTValue v` and
+      `motive_2 := RTListAll items` (a three-conjunct packaging of
+      list-body / record-fields / dict-body round-trip). Each
+      cons step in a body decoder reduces via the
+      `decode{List,RecordFields,Dict}ItemsFuel_cons_step` lemmas
+      after observing — through the head-byte analysis lemma
+      `encodeExt_head_alt` — that no encoded value starts with a
+      closing bracket. Sized-induction is no longer needed: the IH
+      from `ValueExt.rec` quantifies over fuel/rest universally, so
+      the same fuel suffices for both head and tail recursive
+      calls. **Corollary**: `encodeExt_injective` — distinct
+      `ValueExt`s have distinct encodings (follows directly via
+      `decodeExt`).
 - [x] **Float64** added to the codec
       (`OcapnLean.Syrup.ValueExt.float64 (bits : UInt64)`) per
       spec `Notation.md:99` — `D` + 8 bytes IEEE 754 big-endian.
