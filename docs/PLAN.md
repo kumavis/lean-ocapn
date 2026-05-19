@@ -59,7 +59,8 @@ the Lean module structure:
 | `OcapnLean.Captp.Messages`    | Algebraic types for `op:*` and `desc:*` messages                                | Pure Lean                               |
 | `OcapnLean.Captp.Spec`        | **Veil** module: state, transitions, invariants for one CapTP session pair      | Veil `#check_invariants`                |
 | `OcapnLean.Captp.Channels`    | N-party `(src, dst)` FIFO channels — *fail-stop FIFO* (Miller §19)              | Veil `#check_invariants`                |
-| `OcapnLean.Captp.RefFifo`     | Channels + refs + routing + handoff — *end-to-end reference FIFO* (M11 Phase A) | Veil `#check_invariants`                |
+| `OcapnLean.Captp.RefFifo`     | Channels + refs + routing + handoff — *end-to-end reference FIFO at routing target* (M11 Phase A) | Veil `#check_invariants`                |
+| `OcapnLean.Captp.RefFifoForwarding` | RefFifo + promise resolution + forwarding — *end-to-end reference FIFO across A→B→C forwarding* (M11 Phase A.5) | Veil `#check_invariants` |
 | `OcapnLean.Captp.Threeparty`  | Three-vat composition for handoff correctness                                   | Veil + Lean simulation                  |
 | `OcapnLean.Captp.Impl`        | Executable `IO`-based implementation                                            | Refinement lemma against `Captp.Spec`   |
 | `OcapnLean.Netlayer`          | Netlayer typeclass; reference TCP netlayer impl                                 | Property-based tests                    |
@@ -115,14 +116,15 @@ FIFO). For two peers the full module instantiates the above mirror.
 The first three are top priority; the rest are sequenced behind them. Each
 is stated as a `safety` clause plus the supporting `invariant` clauses.
 
-**Scoreboard (2026-05-19, 377 SMT theorems passing — Spec 155, Channels 48,
-RefFifo 110, Gc 18, CrossedHellos 12, NoForgery 8, NoForgeryForwarded 20,
-Threeparty 6):**
+**Scoreboard (2026-05-19, 649 SMT theorems passing — Spec 155, Channels 48,
+RefFifo 110, RefFifoForwarding 272, Gc 18, CrossedHellos 12, NoForgery 8,
+NoForgeryForwarded 20, Threeparty 6):**
 
 | ID | Property | Status | Module |
 | --- | --- | --- | --- |
 | P1 | fail-stop FIFO (per-channel basis) | ✅ proved | `Captp/Channels.lean` |
-| P1 | end-to-end reference FIFO (M11 Phase A) | ✅ proved (immutable-routing regime) | `Captp/RefFifo.lean` |
+| P1 | end-to-end reference FIFO at routing target (M11 Phase A) | ✅ proved (immutable-routing regime) | `Captp/RefFifo.lean` |
+| P1 | end-to-end reference FIFO across A→B→C forwarding (M11 Phase A.5) | ✅ proved (no shortening) | `Captp/RefFifoForwarding.lean` |
 | P2 | promise resolution monotonicity (×3) | ✅ proved | `Captp/Spec.lean` |
 | P3 | no-forgery (direct-send case) | ✅ proved (forwarding deferred) | `Captp/NoForgery.lean` |
 | P4 | GC soundness (wire-delta refcount) | ✅ proved | `Captp/Gc.lean` |

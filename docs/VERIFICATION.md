@@ -14,7 +14,7 @@ Last updated: 2026-05-19 (commit on `feat/captp-runtime-and-interop`).
 
 | Layer | Verified properties | Discharger |
 |---|---|---|
-| **CapTP state machine** (Veil) | 9 named safety properties (P1–P8 + `ref_fifo`) + 20+ supporting invariants, all preserved across all actions. Using Mark Miller's *Robust Composition* §19 vocabulary, `P1` covers both **fail-stop FIFO** (per (src, dst) channel, `Channels.lean`) and **end-to-end reference FIFO** (per (sender, ref), under M11 Phase A's immutable-routing regime, `RefFifo.lean`). | Z3 / cvc5 via Veil's SMT pipeline (`bv_decide` for the float64 atomic round-trip). |
+| **CapTP state machine** (Veil) | 10 named safety properties (P1–P8 + `ref_fifo` + `ref_fifo_e2e`) + 25+ supporting invariants, all preserved across all actions. Using Mark Miller's *Robust Composition* §19 vocabulary, `P1` now covers three layers: **fail-stop FIFO** (per (src, dst) channel, `Channels.lean`), **end-to-end reference FIFO at the routing target** (per (sender, ref) under immutable routing, `RefFifo.lean`), and **end-to-end reference FIFO across forwarding** (per (sender, ref) at the resolution host across the A→B→C chain, `RefFifoForwarding.lean`, M11 Phase A.5). | Z3 / cvc5 via Veil's SMT pipeline (`bv_decide` for the float64 atomic round-trip). |
 | **Refinement: Veil ↔ Lean impl** | `simulates : Impl.State → SpecState → Prop` plus initial / abort / exportNew / importNew lemmas. Lifting lemmas: `bootstrapAtZero_lifts`, `importedFunctional_lifts`, `exportedFunctional_lifts`, `crossedHellosUnique_lifts`, `gcSound_lifts`, `handoffNoReplay_lifts`, plus four vacuous lifts for the spec's promise / listener fields the impl doesn't yet track. | Hand-written Lean tactic scripts. |
 | **Syrup codec** | Universal round-trip `decodeExt (encodeExt v) = some (v, [])` for **all** of `ValueExt` — atomic forms (bool, int, bytes, str, sym, float64) and arbitrarily nested containers (list, record, dict). Encoder injectivity (`encodeExt v₁ = encodeExt v₂ → v₁ = v₂`) follows as a corollary. Property-fuzz (`scripts/SyrupFuzz.lean`) provides a runtime sanity belt. | Lean (`decide` / `simp` / `bv_decide` / `ValueExt.rec` mutual induction). |
 | **Locators** | Round-trip `fromValueExt ∘ toValueExt = some` for `PeerLocator` and `SturdyRef`. URI round-trip with percent-encoded hint values. | Lean (`simp`, `native_decide`). |
@@ -26,20 +26,22 @@ Last updated: 2026-05-19 (commit on `feat/captp-runtime-and-interop`).
 |---|---|---|
 | `OcapnLean/Captp/Spec.lean` (P2, P7, P8) | 155 | `bootstrap_at_zero`, `promise_monotone_{fulfilled,broken}`, `promise_disjoint`, `listen_notify_after_settle`, `abort_terminal` |
 | `OcapnLean/Captp/Channels.lean` (P1, fail-stop FIFO) | 48 | `e2e_fifo` |
-| `OcapnLean/Captp/RefFifo.lean` (P1, end-to-end reference FIFO, M11 Phase A) | 110 | `e2e_fifo`, `ref_fifo` |
+| `OcapnLean/Captp/RefFifo.lean` (P1, end-to-end reference FIFO at routing target, M11 Phase A) | 110 | `e2e_fifo`, `ref_fifo` |
+| `OcapnLean/Captp/RefFifoForwarding.lean` (P1, end-to-end reference FIFO across forwarding, M11 Phase A.5) | 272 | `e2e_fifo`, `ref_fifo`, `ref_fifo_e2e` |
 | `OcapnLean/Captp/CrossedHellos.lean` (P5) | 12 | `crossed_hellos_unique` |
 | `OcapnLean/Captp/Gc.lean` (P4) | 18 | `gc_sound` |
 | `OcapnLean/Captp/NoForgery.lean` (P3 direct-send) | 8 | `no_forgery` |
 | `OcapnLean/Captp/NoForgeryForwarded.lean` (P3 forwarding) | 20 | `no_forgery_forwarded` |
 | `OcapnLean/Captp/Threeparty.lean` (P6) | 6 | `handoff_no_replay` |
-| **Total** | **377** SMT theorems, 0 failures | 9 named P-properties |
+| **Total** | **649** SMT theorems, 0 failures | 10 named P-properties |
 
-Plus `Gc.lean` adds 4 `sat trace` witnesses (`bmc_sat`) and `RefFifo.lean`
-adds 1 (`three_party_handoff_happy`) demonstrating that the specs concretely
-admit, respectively, the GC happy path / three in-flight ref-ships /
-send-and-dec interleaving / empty trace, and the canonical 3-party reference
-handoff (Alice routes to Carol for R, Alice sends m₁, Alice hands R to Bob,
-Bob sends m₂, Carol delivers both).
+Plus `Gc.lean` adds 4 `sat trace` witnesses (`bmc_sat`), `RefFifo.lean`
+adds 1, and `RefFifoForwarding.lean` adds 2. The Phase A.5 witnesses
+cover: the canonical promise-resolves-then-forward path (A routes P→B,
+sends m₁, m₂; B resolves P→C; B forwards both; C delivers both), and
+the resolve-mid-stream variant (A sends m₁; B delivers; B resolves P→C;
+A sends m₂; B delivers; B forwards both in order; C delivers both in
+order).
 
 Re-verified from scratch on every CI push by the
 `verify-veil-fresh` job (caches `.lake/packages` only; rebuilds
@@ -123,6 +125,7 @@ lake clean && lake build
 # Just re-verify Veil from scratch:
 rm -rf .lake/build
 lake build OcapnLean.Captp.Spec OcapnLean.Captp.Channels OcapnLean.Captp.RefFifo \
+           OcapnLean.Captp.RefFifoForwarding \
            OcapnLean.Captp.CrossedHellos OcapnLean.Captp.Gc \
            OcapnLean.Captp.NoForgery OcapnLean.Captp.NoForgeryForwarded \
            OcapnLean.Captp.Threeparty

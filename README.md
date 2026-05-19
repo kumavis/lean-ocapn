@@ -7,14 +7,15 @@ proved using [Veil](https://github.com/verse-lab/veil).
 ## Status
 
 **All eight proposed proofs of behavior are mechanically discharged**
-(377 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants` —
-Spec 155, Channels 48, RefFifo 110, Gc 18, CrossedHellos 12, NoForgery 8,
-NoForgeryForwarded 20, Threeparty 6):
+(649 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants` —
+Spec 155, Channels 48, RefFifo 110, RefFifoForwarding 272, Gc 18,
+CrossedHellos 12, NoForgery 8, NoForgeryForwarded 20, Threeparty 6):
 
 | ID | Property | Module |
 | --- | --- | --- |
 | **P1** | fail-stop FIFO (per (src, dst) channel) | `OcapnLean/Captp/Channels.lean` |
-| **P1** | **end-to-end reference FIFO** (per (sender, ref), M11 Phase A) | `OcapnLean/Captp/RefFifo.lean` |
+| **P1** | end-to-end reference FIFO at routing target (per (sender, ref), M11 Phase A) | `OcapnLean/Captp/RefFifo.lean` |
+| **P1** | **end-to-end reference FIFO across A→B→C forwarding** (no shortening, M11 Phase A.5) | `OcapnLean/Captp/RefFifoForwarding.lean` |
 | **P2** | promise resolution monotonicity (×3) | `OcapnLean/Captp/Spec.lean` |
 | **P3** | no-forgery (direct-send case) | `OcapnLean/Captp/NoForgery.lean` |
 | **P3** | no-forgery (forwarding case) | `OcapnLean/Captp/NoForgeryForwarded.lean` |
@@ -56,7 +57,8 @@ ocapn-lean/
 │   │   ├── Messages.lean       op:* / desc:* algebraic types
 │   │   ├── Spec.lean           Veil: single-peer  — proves P8, P2, listen-notify (143 thms)
 │   │   ├── Channels.lean       Veil: N-party FIFO — proves P1 fail-stop FIFO (48 thms)
-│   │   ├── RefFifo.lean        Veil: refs + routing — proves P1 end-to-end ref FIFO (110 thms)
+│   │   ├── RefFifo.lean        Veil: refs + routing — proves P1 ref FIFO @ routing target (110 thms)
+│   │   ├── RefFifoForwarding.lean  Veil: promises + forwarding — proves P1 ref FIFO @ resolution host (272 thms)
 │   │   ├── CrossedHellos.lean  Veil: handshake    — proves P5 (12 thms)
 │   │   ├── Gc.lean             Veil: refcounts    — proves P4 (18 thms)
 │   │   ├── NoForgery.lean      Veil: authority    — proves P3 (8 thms)

@@ -210,6 +210,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Spec,
     `OcapnLean.Captp.Channels,
     `OcapnLean.Captp.RefFifo,
+    `OcapnLean.Captp.RefFifoForwarding,
     `OcapnLean.Captp.CrossedHellos,
     `OcapnLean.Captp.Gc,
     `OcapnLean.Captp.NoForgery,

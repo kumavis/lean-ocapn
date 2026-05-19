@@ -389,7 +389,7 @@ Phase A's original scoping — the model has no `forward` action and no
 promise resolution, so msgs sent to a promise simply terminate at the
 promise's holder in the spec.)
 
-### M11 Phase A.5 — Promise resolution + forwarding (without shortening) _(2026-05-19 opened)_
+### M11 Phase A.5 — Promise resolution + forwarding (without shortening) _(landed 2026-05-19)_
 
 Close the gap surfaced by Phase A's review. Model the CapTP behavior
 that already exists **without** any shortening optimization: when a promise
@@ -419,7 +419,7 @@ mirrors the Phase A pattern where `routesTo` is mutable from day one —
 the spec-level proof commits to *what* must be true, not *how* the
 implementation arranges it.
 
-- [ ] **`OcapnLean/Captp/RefFifoForwarding.lean`** (new module) — augments
+- [x] **`OcapnLean/Captp/RefFifoForwarding.lean`** (new module) — augments
       `RefFifo.lean`'s state with:
       - `relation isPromise : ref → Prop` — marks a ref as a promise
       - `relation resolvedTo : ref → vat → Prop` — promise resolved to a
@@ -436,62 +436,76 @@ implementation arranges it.
         both `sentAt` and `forwardedAt` (so per-channel cursor logic still
         applies on B→C, plus we can identify "this wire-level send was a
         forward, not an origination").
-- [ ] **Weakened `send` precondition:** `∀ S' D' K, ¬ sentAt S' D' m K`
+- [x] **Weakened `send` precondition:** `∀ S' D' K, ¬ sentAt S' D' m K`
       ⇒ `∀ K, ¬ sentAt s d m K` (per-channel uniqueness, not global).
       Same msg can appear on multiple wires via forwarding; freshness at
       origination is enforced by `∀ S', ¬ sentBy S' m`.
-- [ ] **Weakened `sentAt_has_sentBy` invariant** ⇒
+- [x] **Weakened `sentAt_has_sentBy` invariant** ⇒
       `sentAt_originator_or_forwarded`: each sentAt entry is either an
       origination (`sentBy S M`) or a forwarding step
-      (`∃ K, forwardedAt S D M K`).
-- [ ] **New invariant `forward_preserves_recv_order`**: for two msgs M1,
-      M2 from the same originator S, both received at B (from S), both
-      forwarded by B to C, the forward-cursor order at B→C matches the
-      receive-cursor order at A→B:
+      (`forwardedAt S D M K`). Required new supporting invariant
+      `sentAt_implies_originator` to rule out forwarding-cycle loopholes
+      that don't bottom out in an origination.
+- [x] **New invariant `forward_preserves_send_order`** (stated with
+      originator's send-index `sentAt`, not deliveredAt — equivalent by
+      per-channel FIFO, easier for SMT): for two msgs M1, M2 from the
+      same originator S, same target ref, both forwarded by B to C,
+      the forward-cursor order at B→C matches the originator's
+      send-cursor order at S→B:
       ```
       sentBy S M1 ∧ sentBy S M2 ∧
+      targetRef M1 = targetRef M2 ∧
       forwardedAt B C M1 K1 ∧ forwardedAt B C M2 K2 ∧
-      deliveredAt S B M1 J1 ∧ deliveredAt S B M2 J2 ∧
+      sentAt S B M1 J1 ∧ sentAt S B M2 J2 ∧
       J1 < J2 → K1 < K2
       ```
-      Discharged by `forward`'s precondition: only forward when all
-      earlier-received same-sender same-destination msgs are already
-      forwarded.
-- [ ] **New safety `[ref_fifo_e2e]`** — per-sender, per-ref delivery
+      Discharged together with three supporting invariants surfaced
+      during proof: `sent_implies_pending_or_delivered`,
+      `earlier_send_delivered_when_later_send_delivered`, and
+      `earlier_send_forwarded_when_later_send_forwarded` (the latter
+      forces "if a later-sent msg is forwarded, the earlier-sent one
+      must also be forwarded"). The deliver action's per-channel
+      `sentAt s d m (recvCursor s d)` precondition chains to forward
+      preservation via these.
+- [x] **New safety `[ref_fifo_e2e]`** — per-sender, per-ref delivery
       order at the **resolution host** matches origination send order,
-      across the forwarding chain:
+      across the forwarding chain. The hypothesis explicitly names the
+      forwarding hop (`forwardedAt B C M_i`) — the canonical "msg
+      traversed S→B→C through B's forwarding" scenario:
       ```
       sentBy S M1 ∧ sentBy S M2 ∧
       targetRef M1 = targetRef M2 ∧
       isPromise (targetRef M1) ∧
       resolvedTo (targetRef M1) C ∧
+      sentAt S B M1 K1 ∧ sentAt S B M2 K2 ∧
+      forwardedAt B C M1 KF1 ∧ forwardedAt B C M2 KF2 ∧
       delivered B C M1 ∧ delivered B C M2 ∧
       deliveredAt B C M1 N1 ∧ deliveredAt B C M2 N2 ∧
-      sentAt S B M1 K1 ∧ sentAt S B M2 K2 ∧
       K1 < K2 → N1 < N2
       ```
       Proof chain: A→B `e2e_fifo` (K1 < K2 → J1 < J2 at B) +
-      `forward_preserves_recv_order` (J1 < J2 → L1 < L2 at B→C send) +
-      B→C `e2e_fifo` (L1 < L2 → N1 < N2 at C).
-- [ ] **`sat trace [promise_resolve_and_forward]`** — the user's canonical
+      `forward_preserves_send_order` (sentAt order → forwardedAt order
+      at B→C) + B→C `e2e_fifo` (forward-cursor order → N1 < N2 at C).
+- [x] **`sat trace [promise_resolve_and_forward]`** — the user's canonical
       scenario: A routes P→B, A sends m₁; A sends m₂; B receives m₁, m₂;
-      B resolves P→C (installs `routesTo b p c`); B forwards m₁; B
-      forwards m₂; C receives both. SMT finds a concrete model with the
-      forwarding chain.
-- [ ] **`sat trace [resolve_mid_stream]`** — variant where B's resolve
+      B resolves P→C; B forwards m₁; B forwards m₂; C receives both.
+      SMT finds a concrete model with three distinct vats and the full
+      A→B→C chain.
+- [x] **`sat trace [resolve_mid_stream]`** — variant where B's resolve
       fires *between* A's sends: A sends m₁; B receives m₁; B resolves
       P→C; A sends m₂ (still A→B because A doesn't know about the
       resolution); B receives m₂; B forwards m₁; B forwards m₂; C
       receives both. Confirms `ref_fifo_e2e` holds even when resolution
       interleaves with origination.
-- [ ] **Refresh `VERIFICATION.md`** with the new module's SMT count and
-      the strengthened headline statement.
+- [x] **`VERIFICATION.md` refreshed** — Phase A.5 adds **272 SMT
+      theorems** and a new named safety `ref_fifo_e2e`. Cumulative total:
+      377 → 649 (was 8 named P-properties + ref_fifo → now also
+      ref_fifo_e2e = 10 named).
 
-**Effort target:** ~2 weeks. The novel proof obligation is
-`forward_preserves_recv_order` — a cross-channel invariant that doesn't
-exist in either Channels.lean or RefFifo.lean. The other pieces (promise
-sort, resolution action, forward action) are pattern-matched on Phase A's
-shape.
+**Module breakdown (Phase A.5 delta):**
+- RefFifoForwarding.lean: 272 thm (28 invariants + e2e_fifo + ref_fifo +
+  ref_fifo_e2e, per init + setupRoute + declarePromise + resolvePromise +
+  send + deliver + handoff + forward) + 2 `sat trace` witnesses.
 
 **Relationship to Phase B:** Phase B's `shorten` mutates `routesTo[A, P]`
 from B to C *at the sender's side*, bypassing the forwarding chain
