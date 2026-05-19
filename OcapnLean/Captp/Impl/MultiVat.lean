@@ -1,12 +1,22 @@
 import OcapnLean.Captp.Impl
 
 /-!
-# CapTP impl — N-vat compositional model (M11 Phase A.6)
+# CapTP impl — N-vat **parallel-Lean** model (M11 Phase A.6)
 
 `OcapnLean.Captp.Impl` models a single peer's view of one CapTP session.
-This module wraps it into an N-vat composition so we can talk about
-multi-vat properties (the three P1 tiers — fail-stop FIFO, ref FIFO at
-routing target, ref FIFO across forwarding) at the impl level.
+This module wraps it into a multi-vat composition — a pure-Lean state
+machine that expresses what a multi-vat CapTP deployment should look
+like at the protocol abstraction level.
+
+> **Important caveat (M11 Phase A.7 gap).** This is a **parallel
+> formalization**, not the actually-running CapTP code. The runtime
+> event loop in `OcapnLean.Captp.Session` and `OcapnLean.Captp.Run`
+> does not construct `Impl.MultiVat.State` values; it works with
+> per-process `Impl.State`s and netlayer connections directly. The
+> lifts in `RefinementMultiVat` prove FIFO of this Lean state machine,
+> but the connection from the runtime to the parallel model is M11
+> Phase A.7 (planned, not started). Today the runtime is still trusted
+> via cross-impl interop tests (24/24).
 
 ## What's modeled here
 

@@ -6,14 +6,23 @@ import OcapnLean.Captp.Impl.MultiVat
 -- lift theorem reads independently of Veil's elaboration details.
 
 /-!
-# Refinement: multi-vat `Impl` ↔ multi-vat Veil spec (M11 Phase A.6)
+# Refinement: multi-vat **parallel Lean model** ↔ Veil spec (M11 Phase A.6)
 
 `OcapnLean.Captp.Refinement` and `RefinementExtended` cover the
-single-peer properties (P2, P4, P5, P6, P8). This module covers the
-*multi-vat* properties — the three P1 tiers — by relating the
-N-vat compositional impl model (`Impl.MultiVat`) to the abstract
-Veil-side state shapes from `Channels.lean`, `RefFifo.lean`, and
-`RefFifoForwarding.lean`.
+single-peer properties (P2, P4, P5, P6, P8) — genuine refinements of
+`Captp.Impl` to `Captp.Spec`. This module covers the *multi-vat*
+properties (the three P1 tiers) by relating the pure-Lean parallel
+state machine `Impl.MultiVat` to the abstract Veil-side state shapes
+from `Channels.lean`, `RefFifo.lean`, and `RefFifoForwarding.lean`.
+
+> **Important caveat (M11 Phase A.7 gap).** The lifts in this module
+> prove FIFO of the **parallel-Lean state machine** `Impl.MultiVat`,
+> not of the runtime event loop. `Captp.Session.run` does not
+> construct `Impl.MultiVat.State` values; it works with per-process
+> `Impl.State`s and netlayer connections directly. Closing the gap
+> from runtime to parallel model is M11 Phase A.7 — a runtime trace
+> semantics + a projection + a step-preservation proof. Today the
+> runtime is still trusted via cross-impl interop (24/24).
 
 This file follows the same pattern as `RefinementExtended.lean`:
 

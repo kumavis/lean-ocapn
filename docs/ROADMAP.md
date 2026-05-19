@@ -515,32 +515,50 @@ messages on A→C (post-shorten)." Phase A.5's `ref_fifo_e2e` is exactly
 the property shortening breaks — so Phase A.5 must land first to give
 Phase B a non-vacuous baseline to violate.
 
-### M11 Phase A.6 — Impl-level refinement of ref FIFO _(landed 2026-05-19)_
+### M11 Phase A.6 — **Parallel-Lean** multi-vat model + FIFO lifts _(landed 2026-05-19, scope-clarified 2026-05-19)_
 
-Lift the spec-level FIFO proofs (Phases A and A.5) to the executable
-implementation. Today `e2e_fifo`, `ref_fifo`, and `ref_fifo_e2e` are
-properties of the Veil action model in `Channels.lean`, `RefFifo.lean`,
-and `RefFifoForwarding.lean`. The runnable Lean code in `Captp/Impl.lean`
-implements one peer's view of one session, and the existing refinement
-layer (`Refinement.lean`, `RefinementExtended.lean`) connects only the
-**single-peer** properties (P2, P4, P5, P6, P8). All three tiers of P1
-remain **spec-only**.
+**Honest characterisation.** What this phase actually delivers is a
+**pure-Lean parallel formalization** of multi-vat CapTP plus lifts of
+the Veil-proved FIFO properties onto that formalization. It does **not**
+formally connect to the actually-running `Captp.Session.run` /
+`Captp.Run.runHandler` event loop. The runtime is still trusted via
+interop tests (24/24).
 
-**Why this matters:** the headline claim of M11 is "end-to-end reference
-FIFO." Without impl refinement, that's only true of the Veil model — the
-runnable Lean code is checked against other implementations on the wire
-(interop tests, 24/24) but has no formal connection to the FIFO proof.
-Once Phase A.6 lands, the headline holds of the runnable code itself
-(modulo the trusted netlayer + Syrup codec, which are verified
-separately — Syrup codec round-trip in M1, netlayer behavior in
-interop tests).
+What that means concretely:
 
-**Scope:** impl-refinement of fail-stop FIFO (Channels), ref FIFO at
-routing target (RefFifo), and ref FIFO across forwarding
-(RefFifoForwarding). Phase B's counter-trace doesn't need refinement
-(it's about violation, not preservation); Phase C's `op:flush` would
-get its own follow-on impl-refinement phase (call it C.6) once the
-spec is solid.
+* `Impl.MultiVat.State` is a new Lean state-machine introduced in this
+  phase. Its `peers : Vat → Impl.State` field is a collection of
+  single-peer `Impl.State`s, but no code path in the running CapTP
+  server constructs values of this type or steps it via `send` /
+  `deliver` / `forward`.
+* `RefinementMultiVat`'s `e2e_fifo_lifts`, `ref_fifo_lifts`,
+  `ref_fifo_e2e_lifts` prove FIFO at the **MultiVat state-machine**
+  level — given the Veil-proved safety, any value of type
+  `Impl.MultiVat.State` has the corresponding impl-level FIFO property.
+* This is useful as a stepping stone — it expresses what the runtime
+  *should* do in plain Lean (not Veil), with computable predicates over
+  concrete data structures — but it is **not** a refinement of the
+  runtime in the technical sense ("the live code preserves a
+  simulation to MultiVat under every step").
+
+The **gap** between the parallel model and the actual runtime is
+described in the new "Phase A.7" entry below.
+
+**Original (overstated) framing — kept for context:** the prose below
+described this phase as "lifting FIFO proofs to the executable
+implementation" and claimed the headline "becomes true of the runnable
+Lean code." That was wrong — the runnable Lean code in
+`Captp/Session.run` is not refined to MultiVat, so the claim only
+applies to the parallel formalization. Phase A.7 is the work that
+would actually close the gap.
+
+**Scope (clarified):** parallel-model lifts only — fail-stop FIFO
+(Channels), ref FIFO at routing target (RefFifo), and ref FIFO across
+forwarding (RefFifoForwarding). Phase B's counter-trace doesn't need
+the parallel model (it's about violation). Phase C's `op:flush` would
+extend the parallel model with the flush precondition; a separate
+Phase C.6 (parallel-model version) would mirror this Phase A.6 for
+shortening.
 
 **Steps:**
 
@@ -638,12 +656,88 @@ weeks) borrow the pattern from `RefinementExtended.lean`; runtime test
   `*_lifts` are hand-written Lean tactic scripts, not SMT-discharged).
 
 **Relationship to existing refinement:**
-- `Refinement.lean` (single-peer): unchanged.
+- `Refinement.lean` (single-peer): unchanged. Genuine refinement of
+  `Captp.Impl` to `Captp.Spec`.
 - `RefinementExtended.lean` (single-peer extended actions): unchanged.
-- `RefinementMultiVat.lean` (new): the parallel for multi-vat properties.
-- Both can coexist — the single-peer lifts continue to give P2, P4, P5,
-  P6, P8 at the impl level; the new multi-vat lifts add the three P1
-  tiers.
+  Genuine refinement.
+- `RefinementMultiVat.lean` (new, Phase A.6): **parallel-model**
+  formalization — proves a Lean-side multi-vat state machine has FIFO,
+  but does not formally connect to the runtime event loop.
+- Phase A.7 (below) is what would actually connect the runtime to the
+  parallel model.
+
+### M11 Phase A.7 — Wire runtime to MultiVat _(planned, not opened)_
+
+The gap Phase A.6 left open: `Captp.Session.run`,
+`Captp.Run.runHandler`, and the multi-process CapTP deployment have no
+formal connection to `Impl.MultiVat.State` or its lifts. Phase A.7
+closes that gap. Two design choices in tension:
+
+**Approach 1: Runtime *uses* MultiVat.** Refactor `Captp.Session.run`
+so each iteration of the event loop is literally a call to
+`Impl.MultiVat.send` / `deliver` / `forward` on the per-peer state.
+The runtime becomes a thin shell around MultiVat; the proof carries
+because runtime *is* MultiVat operations.
+
+* Pro: simple. No new proof obligation; the existing lifts apply.
+* Con: requires teaching MultiVat to model *everything* the runtime
+  does (op:start-session handshake, op:gc-exports, op:deliver with
+  payloads, etc.) — MultiVat is currently a thin protocol-level
+  abstraction missing most of those.
+
+**Approach 2: Project runtime *to* MultiVat.** Keep the runtime as-is.
+Define a projection `Captp.Session.RuntimeState → Impl.MultiVat.State`
+that abstracts the actual N-process + N(N-1)-connections deployment
+into a MultiVat value. Prove the projection preserves simulation
+under every runtime step (each netlayer `recv` corresponds to a
+`MultiVat.deliver`, each app-level eventual-send corresponds to a
+`MultiVat.send`, etc.).
+
+* Pro: doesn't constrain the runtime; the abstraction is what closes
+  the gap.
+* Con: requires a runtime trace semantics + step-preservation proof,
+  which is genuine refinement work. The `Captp.Session` event loop
+  would need to expose enough structure to make stepping observable.
+
+**Recommended:** Approach 2 with a small constraint — have
+`Captp.Session.run` factor out an `Impl.MultiVat.send` /
+`Impl.MultiVat.deliver` call site so the projection is by-construction
+rather than after-the-fact. This is the smallest change to runtime
+that gives a genuine refinement.
+
+**Tasks:**
+
+- [ ] **`OcapnLean/Captp/RuntimeTrace.lean`** — define
+      `RuntimeState := Map Vat (Impl.State × Set ConnectionState)`
+      plus a step relation modelling: app-level eventual-send,
+      netlayer-recv-decode, dispatch-to-Impl. One concrete step type
+      per runtime action site.
+- [ ] **`projectToMultiVat : RuntimeState → Impl.MultiVat.State`** —
+      structural projection. For each peer, project Impl.State; for
+      each connection, project to ChannelState by reading the netlayer's
+      pending/received queues.
+- [ ] **Refactor `Captp.Session.run` to factor out `MultiVat.send /
+      deliver` call sites** at the right points (one per netlayer recv,
+      one per app-level eventual-send). Makes the projection
+      by-construction.
+- [ ] **`projectToMultiVat_preserved_by_step`** — for every
+      `RuntimeState.step`, the projection of the post-state is the
+      `MultiVat.send` / `deliver` / `forward` of the projection of
+      the pre-state.
+- [ ] **Headline corollary**: `runtime_ref_fifo_e2e` — the runtime
+      satisfies end-to-end ref FIFO. Follows from
+      `projectToMultiVat_preserved_by_step` + `ref_fifo_e2e_lifts` +
+      the Veil-proved safety on the projection.
+- [ ] **Update VERIFICATION / README / PLAN** to honestly reflect
+      Phase A.7's narrower-but-real claim once it lands.
+
+**Effort target:** ~2 weeks, dominated by the runtime trace semantics
+and the projection-preservation proof. Less than Phase A.6's estimate
+because Phase A.6's parallel formalization is reusable as the target.
+
+**Out of scope:** wire-level proof (netlayer FIFO, Syrup codec
+correctness on bytes). Those remain trusted via the codec round-trip
+proof (already done in M1) and interop tests (24/24).
 
 ### M11 Phase B — Promise shortening breaks `ref_fifo` _(counter-trace)_
 

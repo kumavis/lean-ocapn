@@ -31,11 +31,15 @@ handoff) follows Mark Miller's *Robust Composition* §19. See M11 in
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for the upgrade path to promise
 shortening + `op:flush` (Phases B and C).
 
-All three P1 tiers are also **refined to the multi-vat impl** (M11 Phase A.6,
-`OcapnLean.Captp.RefinementMultiVat`) via `e2e_fifo_lifts`, `ref_fifo_lifts`,
-and `ref_fifo_e2e_lifts`. The runtime smoke
-(`./.lake/build/bin/multi-vat-fifo-smoke`) exercises the canonical
-A→P→B→resolves→C scenario on the impl state.
+All three P1 tiers also have **parallel-Lean formalizations** (M11 Phase
+A.6, `OcapnLean.Captp.Impl.MultiVat` and `RefinementMultiVat`) with
+lifting lemmas (`e2e_fifo_lifts`, `ref_fifo_lifts`, `ref_fifo_e2e_lifts`)
+that connect the Veil safeties to a pure-Lean multi-vat state machine.
+This is a stepping stone, not a refinement of the actually-running
+`Captp.Session.run` event loop — that gap is M11 Phase A.7 (planned).
+Today the runtime is still trusted via cross-impl interop (24/24). The
+runtime smoke (`./.lake/build/bin/multi-vat-fifo-smoke`) exercises the
+parallel state machine's step functions concretely.
 
 See [`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones.

@@ -61,8 +61,8 @@ the Lean module structure:
 | `OcapnLean.Captp.Channels`    | N-party `(src, dst)` FIFO channels — *fail-stop FIFO* (Miller §19)              | Veil `#check_invariants`                |
 | `OcapnLean.Captp.RefFifo`     | Channels + refs + routing + handoff — *end-to-end reference FIFO at routing target* (M11 Phase A) | Veil `#check_invariants`                |
 | `OcapnLean.Captp.RefFifoForwarding` | RefFifo + promise resolution + forwarding — *end-to-end reference FIFO across A→B→C forwarding* (M11 Phase A.5) | Veil `#check_invariants` |
-| `OcapnLean.Captp.Impl.MultiVat` + `Impl.PromiseForwarding` | N-vat compositional impl model + promise / forwarding actions (M11 Phase A.6) | Pure-Lean state machine |
-| `OcapnLean.Captp.RefinementMultiVat` | Multi-vat refinement: `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` + three headline lifts | Hand-written Lean refinement |
+| `OcapnLean.Captp.Impl.MultiVat` + `Impl.PromiseForwarding` | **Parallel-Lean** N-vat state machine + promise / forwarding actions (M11 Phase A.6). Not connected to the running `Captp.Session.run` event loop — see Phase A.7 in ROADMAP. | Pure-Lean state machine |
+| `OcapnLean.Captp.RefinementMultiVat` | Veil ↔ parallel-Lean refinement: `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` + three lifts. Proves FIFO of the parallel state machine, *not* of the runtime. | Hand-written Lean refinement |
 | `OcapnLean.Captp.Threeparty`  | Three-vat composition for handoff correctness                                   | Veil + Lean simulation                  |
 | `OcapnLean.Captp.Impl`        | Executable `IO`-based implementation                                            | Refinement lemma against `Captp.Spec`   |
 | `OcapnLean.Netlayer`          | Netlayer typeclass; reference TCP netlayer impl                                 | Property-based tests                    |
@@ -124,9 +124,9 @@ NoForgeryForwarded 20, Threeparty 6):**
 
 | ID | Property | Status | Module |
 | --- | --- | --- | --- |
-| P1 | fail-stop FIFO (per-channel basis) | ✅ proved | `Captp/Channels.lean` |
-| P1 | end-to-end reference FIFO at routing target (M11 Phase A) | ✅ proved (immutable-routing regime) | `Captp/RefFifo.lean` |
-| P1 | end-to-end reference FIFO across A→B→C forwarding (M11 Phase A.5) | ✅ proved (no shortening) | `Captp/RefFifoForwarding.lean` |
+| P1 | fail-stop FIFO (per-channel basis) | ✅ proved at spec level; parallel-Lean lift in `RefinementMultiVat` (runtime not yet refined) | `Captp/Channels.lean` |
+| P1 | end-to-end reference FIFO at routing target (M11 Phase A) | ✅ proved at spec level (immutable routing); parallel-Lean lift (runtime not yet refined) | `Captp/RefFifo.lean` |
+| P1 | end-to-end reference FIFO across A→B→C forwarding (M11 Phase A.5) | ✅ proved at spec level (no shortening); parallel-Lean lift (runtime not yet refined) | `Captp/RefFifoForwarding.lean` |
 | P2 | promise resolution monotonicity (×3) | ✅ proved | `Captp/Spec.lean` |
 | P3 | no-forgery (direct-send case) | ✅ proved (forwarding deferred) | `Captp/NoForgery.lean` |
 | P4 | GC soundness (wire-delta refcount) | ✅ proved | `Captp/Gc.lean` |
