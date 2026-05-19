@@ -138,6 +138,97 @@ theorem e2e_fifo_at_impl
   e2e_fifo_lifts impl (canonicalAbstract impl)
     (canonical_simulatesChannels impl) hsafe
 
+/-! ## RefFifo: per-(sender, ref) FIFO at routing target
+
+Mirrors `RefFifo.lean`'s additions (refs, routing, origin tracking).
+The abstract Lean state extends `ChannelsState` with the new relations;
+the lift theorem chains through `e2e_fifo_lifts` via routing
+functionality. -/
+
+/-- Abstract state-shape for `RefFifo.lean`: channel state +
+refs/routing/origin tracking. -/
+structure RefFifoState (vat msg ref : Type) extends ChannelsState vat msg where
+  targetRef : msg → ref
+  routesTo  : vat → ref → vat → Prop
+  sentBy    : vat → msg → Prop
+
+/-- Veil's `safety [ref_fifo]`, restated. Per-(sender, ref) delivery
+order matches send order at the sender's immediate routing target. -/
+def refFifo {vat msg ref : Type} (s : RefFifoState vat msg ref) : Prop :=
+  ∀ S M1 M2 D1 D2 K1 K2 J1 J2,
+    s.sentBy S M1 ∧ s.sentBy S M2 ∧
+    s.targetRef M1 = s.targetRef M2 ∧
+    s.delivered S D1 M1 ∧ s.delivered S D2 M2 ∧
+    s.sentAt S D1 M1 K1 ∧ s.sentAt S D2 M2 K2 ∧
+    s.deliveredAt S D1 M1 J1 ∧ s.deliveredAt S D2 M2 J2 ∧
+    K1 < K2 → J1 < J2
+
+/-- Simulation relation for `RefFifo`: extends `simulatesChannels` with
+the new refs/routing/origin predicates. -/
+def simulatesRefFifo (impl : State) (spec : RefFifoState Vat MsgId Ref) : Prop :=
+  simulatesChannels impl spec.toChannelsState ∧
+  (∀ m, spec.targetRef m = impl.targetRef m) ∧
+  (∀ v r w, spec.routesTo v r w ↔ impl.routesTo v r = some w) ∧
+  (∀ s m, spec.sentBy s m ↔ impl.sentBy m = some s)
+
+/-- The canonical abstract `RefFifoState` projected from a multi-vat
+impl state. -/
+def canonicalAbstractRefFifo (impl : State) : RefFifoState Vat MsgId Ref where
+  toChannelsState := canonicalAbstract impl
+  targetRef m       := impl.targetRef m
+  routesTo v r w    := impl.routesTo v r = some w
+  sentBy s m        := impl.sentBy m = some s
+
+/-- The canonical projection always simulates. -/
+theorem canonical_simulatesRefFifo (impl : State) :
+    simulatesRefFifo impl (canonicalAbstractRefFifo impl) := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · exact canonical_simulatesChannels impl
+  · intro m; rfl
+  · intro v r w; exact Iff.rfl
+  · intro s m; exact Iff.rfl
+
+/-- **Headline: `ref_fifo` lifts to the impl.** -/
+theorem ref_fifo_lifts
+    (impl : State) (spec : RefFifoState Vat MsgId Ref)
+    (hsim : simulatesRefFifo impl spec)
+    (hsafe : refFifo spec) :
+    ∀ s m1 m2 d1 d2 k1 k2 j1 j2,
+      impl.sentBy m1 = some s → impl.sentBy m2 = some s →
+      impl.targetRef m1 = impl.targetRef m2 →
+      delivered impl s d1 m1 → delivered impl s d2 m2 →
+      sentAt impl s d1 m1 k1 → sentAt impl s d2 m2 k2 →
+      deliveredAt impl s d1 m1 j1 → deliveredAt impl s d2 m2 j2 →
+      k1 < k2 → j1 < j2 := by
+  obtain ⟨⟨_, _, hdel, hsent, hdAt⟩, htar, _hrt, hsB⟩ := hsim
+  intro s m1 m2 d1 d2 k1 k2 j1 j2
+       hsb1 hsb2 htr hd1 hd2 hs1 hs2 hda1 hda2 hk
+  apply hsafe s m1 m2 d1 d2 k1 k2 j1 j2
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hk⟩
+  · exact (hsB s m1).mpr hsb1
+  · exact (hsB s m2).mpr hsb2
+  · rw [htar m1, htar m2]; exact htr
+  · exact (hdel s d1 m1).mpr hd1
+  · exact (hdel s d2 m2).mpr hd2
+  · exact (hsent s d1 m1 k1).mpr hs1
+  · exact (hsent s d2 m2 k2).mpr hs2
+  · exact (hdAt s d1 m1 j1).mpr hda1
+  · exact (hdAt s d2 m2 j2).mpr hda2
+
+/-- **End-user lift.** -/
+theorem ref_fifo_at_impl
+    (impl : State)
+    (hsafe : refFifo (canonicalAbstractRefFifo impl)) :
+    ∀ s m1 m2 d1 d2 k1 k2 j1 j2,
+      impl.sentBy m1 = some s → impl.sentBy m2 = some s →
+      impl.targetRef m1 = impl.targetRef m2 →
+      delivered impl s d1 m1 → delivered impl s d2 m2 →
+      sentAt impl s d1 m1 k1 → sentAt impl s d2 m2 k2 →
+      deliveredAt impl s d1 m1 j1 → deliveredAt impl s d2 m2 j2 →
+      k1 < k2 → j1 < j2 :=
+  ref_fifo_lifts impl (canonicalAbstractRefFifo impl)
+    (canonical_simulatesRefFifo impl) hsafe
+
 /-! ## Concrete witness: the empty multi-vat state simulates the empty
 spec state. Sanity check that the simulation relation is satisfiable. -/
 
