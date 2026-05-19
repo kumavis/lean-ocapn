@@ -229,6 +229,119 @@ theorem ref_fifo_at_impl
   ref_fifo_lifts impl (canonicalAbstractRefFifo impl)
     (canonical_simulatesRefFifo impl) hsafe
 
+/-! ## RefFifoForwarding: end-to-end ref FIFO across A→B→C forwarding
+
+Mirrors `RefFifoForwarding.lean`. The abstract state extends `RefFifo`
+with `isPromise`, `resolvedTo`, `forwardedAt`. The headline lift is
+`ref_fifo_e2e_lifts`. -/
+
+/-- Abstract state-shape for `RefFifoForwarding.lean`: refs/routing +
+promises + forwarding ledger. -/
+structure RefFifoForwardingState (vat msg ref : Type)
+    extends RefFifoState vat msg ref where
+  isPromise   : ref → Prop
+  resolvedTo  : ref → vat → Prop
+  forwardedAt : vat → vat → msg → Nat → Prop
+
+/-- Veil's `safety [ref_fifo_e2e]`, restated. Per-(sender, ref)
+delivery order at the resolution host matches origination send order,
+across the A→B→C forwarding chain. -/
+def refFifoE2e {vat msg ref : Type} (s : RefFifoForwardingState vat msg ref) : Prop :=
+  ∀ S M1 M2 B C K1 K2 KF1 KF2 N1 N2,
+    s.sentBy S M1 ∧ s.sentBy S M2 ∧
+    s.targetRef M1 = s.targetRef M2 ∧
+    s.isPromise (s.targetRef M1) ∧
+    s.resolvedTo (s.targetRef M1) C ∧
+    s.sentAt S B M1 K1 ∧ s.sentAt S B M2 K2 ∧
+    s.forwardedAt B C M1 KF1 ∧ s.forwardedAt B C M2 KF2 ∧
+    s.delivered B C M1 ∧ s.delivered B C M2 ∧
+    s.deliveredAt B C M1 N1 ∧ s.deliveredAt B C M2 N2 ∧
+    K1 < K2 → N1 < N2
+
+/-- Simulation relation. Extends `simulatesRefFifo` with the promise
++ forwarding fields. -/
+def simulatesRefFifoForwarding (impl : State)
+    (spec : RefFifoForwardingState Vat MsgId Ref) : Prop :=
+  simulatesRefFifo impl spec.toRefFifoState ∧
+  (∀ r, spec.isPromise r ↔ impl.isPromise r = true) ∧
+  (∀ r v, spec.resolvedTo r v ↔ impl.resolvedTo r = some v) ∧
+  (∀ b c m k, spec.forwardedAt b c m k ↔ impl.forwardedAt b c m = some k)
+
+/-- Canonical projection from impl multi-vat state to abstract
+forwarding state. -/
+def canonicalAbstractRefFifoForwarding (impl : State) :
+    RefFifoForwardingState Vat MsgId Ref where
+  toRefFifoState  := canonicalAbstractRefFifo impl
+  isPromise r     := impl.isPromise r = true
+  resolvedTo r v  := impl.resolvedTo r = some v
+  forwardedAt b c m k := impl.forwardedAt b c m = some k
+
+/-- Canonical projection always simulates. -/
+theorem canonical_simulatesRefFifoForwarding (impl : State) :
+    simulatesRefFifoForwarding impl (canonicalAbstractRefFifoForwarding impl) := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · exact canonical_simulatesRefFifo impl
+  · intro r; exact Iff.rfl
+  · intro r v; exact Iff.rfl
+  · intro b c m k; exact Iff.rfl
+
+/-- **Headline: `ref_fifo_e2e` lifts to the impl.** End-to-end
+per-(sender, ref) delivery order at the resolution host matches
+origination send order, across the A→B→C forwarding chain. -/
+theorem ref_fifo_e2e_lifts
+    (impl : State) (spec : RefFifoForwardingState Vat MsgId Ref)
+    (hsim : simulatesRefFifoForwarding impl spec)
+    (hsafe : refFifoE2e spec) :
+    ∀ s m1 m2 b c k1 k2 kf1 kf2 n1 n2,
+      impl.sentBy m1 = some s → impl.sentBy m2 = some s →
+      impl.targetRef m1 = impl.targetRef m2 →
+      impl.isPromise (impl.targetRef m1) = true →
+      impl.resolvedTo (impl.targetRef m1) = some c →
+      sentAt impl s b m1 k1 → sentAt impl s b m2 k2 →
+      impl.forwardedAt b c m1 = some kf1 → impl.forwardedAt b c m2 = some kf2 →
+      delivered impl b c m1 → delivered impl b c m2 →
+      deliveredAt impl b c m1 n1 → deliveredAt impl b c m2 n2 →
+      k1 < k2 → n1 < n2 := by
+  obtain ⟨⟨⟨_, _, hdel, hsent, hdAt⟩, htar, _, hsB⟩, hip, hrt, hfw⟩ := hsim
+  intro s m1 m2 b c k1 k2 kf1 kf2 n1 n2
+       hsb1 hsb2 htr hip_i hrt_i hs1 hs2 hf1 hf2 hd1 hd2 hda1 hda2 hk
+  apply hsafe s m1 m2 b c k1 k2 kf1 kf2 n1 n2
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hk⟩
+  · exact (hsB s m1).mpr hsb1
+  · exact (hsB s m2).mpr hsb2
+  · rw [htar m1, htar m2]; exact htr
+  · rw [htar m1]; exact (hip _).mpr hip_i
+  · rw [htar m1]; exact (hrt _ c).mpr hrt_i
+  · exact (hsent s b m1 k1).mpr hs1
+  · exact (hsent s b m2 k2).mpr hs2
+  · exact (hfw b c m1 kf1).mpr hf1
+  · exact (hfw b c m2 kf2).mpr hf2
+  · exact (hdel b c m1).mpr hd1
+  · exact (hdel b c m2).mpr hd2
+  · exact (hdAt b c m1 n1).mpr hda1
+  · exact (hdAt b c m2 n2).mpr hda2
+
+/-- **End-user lift.** Combines canonical projection with the lift;
+applicable to any multi-vat impl state given the Veil-proved spec
+safety. The headline impl-level claim of M11 Phase A.6 — end-to-end
+reference FIFO across the A→B→C forwarding chain, at the runnable
+Lean code. -/
+theorem ref_fifo_e2e_at_impl
+    (impl : State)
+    (hsafe : refFifoE2e (canonicalAbstractRefFifoForwarding impl)) :
+    ∀ s m1 m2 b c k1 k2 kf1 kf2 n1 n2,
+      impl.sentBy m1 = some s → impl.sentBy m2 = some s →
+      impl.targetRef m1 = impl.targetRef m2 →
+      impl.isPromise (impl.targetRef m1) = true →
+      impl.resolvedTo (impl.targetRef m1) = some c →
+      sentAt impl s b m1 k1 → sentAt impl s b m2 k2 →
+      impl.forwardedAt b c m1 = some kf1 → impl.forwardedAt b c m2 = some kf2 →
+      delivered impl b c m1 → delivered impl b c m2 →
+      deliveredAt impl b c m1 n1 → deliveredAt impl b c m2 n2 →
+      k1 < k2 → n1 < n2 :=
+  ref_fifo_e2e_lifts impl (canonicalAbstractRefFifoForwarding impl)
+    (canonical_simulatesRefFifoForwarding impl) hsafe
+
 /-! ## Concrete witness: the empty multi-vat state simulates the empty
 spec state. Sanity check that the simulation relation is satisfiable. -/
 

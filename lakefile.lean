@@ -220,6 +220,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Refinement,
     `OcapnLean.Captp.RefinementExtended,
     `OcapnLean.Captp.Impl.MultiVat,
+    `OcapnLean.Captp.Impl.PromiseForwarding,
     `OcapnLean.Captp.RefinementMultiVat,
     `OcapnLean.Captp.Run,
     `OcapnLean.Captp.Bootstrap,

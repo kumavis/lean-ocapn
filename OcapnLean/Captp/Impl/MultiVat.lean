@@ -116,6 +116,16 @@ structure State where
   msg (we never mutate this); analogous to the Veil module's
   `function targetRef : msg → ref`. -/
   targetRef : MsgId → Ref
+  /-- Promises (a kind of ref). Used by the resolvePromise / forward
+  actions in `Impl/PromiseForwarding.lean`. -/
+  isPromise : Ref → Bool
+  /-- Resolution: `resolvedTo r = some v` means promise `r` has resolved
+  to a value hosted at vat `v`. Set once (functional by construction). -/
+  resolvedTo : Ref → Option Vat
+  /-- Forwarding ledger: `forwardedAt b c m` records the send-cursor
+  index at which `b` forwarded `m` onto the `b→c` wire. `none` when
+  not yet forwarded. -/
+  forwardedAt : Vat → Vat → MsgId → Option Nat
 
 /-- Initial multi-vat state: every vat in its `Impl.initial`
 configuration, every channel empty, no routes installed, no msgs
@@ -128,6 +138,9 @@ def initial : State where
   routesTo _ _ := none
   sentBy _     := none
   targetRef _  := 0
+  isPromise _  := false
+  resolvedTo _ := none
+  forwardedAt _ _ _ := none
 
 /-- True iff `msg` is currently in flight or already delivered on the
 `src → dst` channel. Used by `send`'s per-channel uniqueness guard. -/
