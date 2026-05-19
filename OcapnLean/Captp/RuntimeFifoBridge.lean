@@ -119,6 +119,37 @@ theorem networkState_get_set_eq
          OcapnLean.Netlayer.InProcess.NetworkState.get
   simp [List.find?_cons]
 
+/-- Lookup at a different key is unchanged after a `set`. -/
+theorem networkState_get_set_ne
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat)
+    (q : OcapnLean.Netlayer.InProcess.ChannelQueue)
+    (src' dst' : OcapnLean.Netlayer.Spec.Vat)
+    (h : (src', dst') ≠ (src, dst)) :
+    (ns.set (src, dst) q).get (src', dst') = ns.get (src', dst') := by
+  unfold OcapnLean.Netlayer.InProcess.NetworkState.set
+         OcapnLean.Netlayer.InProcess.NetworkState.get
+  -- After set: (src, dst, q) :: filter (·.1 ≠ (src, dst)) ns.channels.
+  -- find? skips the head (key mismatch), reduces filter+find? via
+  -- the find?_filter simp rule. We're left showing two `find?`s with
+  -- equivalent predicates produce equal results.
+  simp only [List.find?_cons]
+  have hne : ¬ ((src, dst) = (src', dst')) := fun heq => h heq.symm
+  simp [hne]
+  -- Predicate equivalence: a.1 ≠ k ∧ a.1 = k' equivalent to a.1 = k'
+  -- (under k' ≠ k).
+  have hpred :
+      (fun a : OcapnLean.Netlayer.InProcess.ChanKey ×
+               OcapnLean.Netlayer.InProcess.ChannelQueue =>
+          !decide (a.fst = (src, dst)) && decide (a.fst = (src', dst'))) =
+      (fun a => decide (a.fst = (src', dst'))) := by
+    funext x
+    by_cases hx : x.1 = (src', dst')
+    · -- x.1 = (src', dst') ≠ (src, dst), so the first conjunct is True
+      simp [hx, h]
+    · simp [hx]
+  rw [hpred]
+
 /-! ## Per-op correspondence (send)
 
 After a `sendOnState` op, the projection of the resulting
@@ -160,5 +191,216 @@ theorem project_recvOnState_at_modified_channel_busy
               OcapnLean.Captp.RuntimeFifo.Action.apply,
               OcapnLean.Captp.RuntimeFifo.update]
   simp [hbusy, networkState_get_set_eq]
+
+/-! ## Cross-channel correspondence
+
+The complementary case to `project_sendOnState_at_modified_channel`:
+at a channel *other* than the just-modified one, the projection is
+unchanged on both sides. -/
+
+/-- Send at one channel doesn't affect the projection of another. -/
+theorem project_sendOnState_at_other_channel
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) (msg : ByteArray)
+    (src' dst' : OcapnLean.Netlayer.Spec.Vat)
+    (h : (src', dst') ≠ (src, dst)) :
+    (projectNetworkState (sendOnState ns src dst msg)).channels src' dst' =
+    ((OcapnLean.Captp.RuntimeFifo.Action.send src dst msg).apply
+      (projectNetworkState ns)).channels src' dst' := by
+  dsimp [projectNetworkState, sendOnState, projectChannelQueue,
+         OcapnLean.Captp.RuntimeFifo.Action.apply,
+         OcapnLean.Captp.RuntimeFifo.update]
+  have heq : ¬ (src' = src ∧ dst' = dst) :=
+    fun ⟨h1, h2⟩ => h (by rw [h1, h2])
+  simp [heq]
+  rw [networkState_get_set_ne ns src dst _ src' dst' h]
+  exact ⟨rfl, rfl⟩
+
+/-- Recv at one channel doesn't affect the projection of another. -/
+theorem project_recvOnState_at_other_channel
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat)
+    (src' dst' : OcapnLean.Netlayer.Spec.Vat)
+    (h : (src', dst') ≠ (src, dst)) :
+    (projectNetworkState (recvOnState ns src dst)).channels src' dst' =
+    ((OcapnLean.Captp.RuntimeFifo.Action.recv src dst).apply
+      (projectNetworkState ns)).channels src' dst' := by
+  dsimp [projectNetworkState, recvOnState, projectChannelQueue,
+         OcapnLean.Captp.RuntimeFifo.Action.apply,
+         OcapnLean.Captp.RuntimeFifo.update]
+  have heq : ¬ (src' = src ∧ dst' = dst) :=
+    fun ⟨h1, h2⟩ => h (by rw [h1, h2])
+  by_cases hbusy : (ns.get (src, dst)).received.size < (ns.get (src, dst)).sent.size
+  · simp [hbusy, heq]
+    rw [networkState_get_set_ne ns src dst _ src' dst' h]
+    exact ⟨rfl, rfl⟩
+  · simp [hbusy]
+
+/-! ## Combined per-channel correspondence
+
+The full per-channel correspondence: at *any* channel, the projection
+commutes with sendOnState / recvOnState. -/
+
+/-- For any `(src', dst')`, send correspondence holds (either same
+channel via `*_at_modified_channel` or different via `*_at_other_channel`). -/
+theorem project_sendOnState_channels
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) (msg : ByteArray)
+    (src' dst' : OcapnLean.Netlayer.Spec.Vat) :
+    (projectNetworkState (sendOnState ns src dst msg)).channels src' dst' =
+    ((OcapnLean.Captp.RuntimeFifo.Action.send src dst msg).apply
+      (projectNetworkState ns)).channels src' dst' := by
+  by_cases heq : (src', dst') = (src, dst)
+  · have h1 : src' = src := (Prod.mk.inj heq).1
+    have h2 : dst' = dst := (Prod.mk.inj heq).2
+    subst src'; subst dst'
+    exact project_sendOnState_at_modified_channel ns src dst msg
+  · exact project_sendOnState_at_other_channel ns src dst msg src' dst' heq
+
+/-- For any `(src', dst')`, recv correspondence holds. -/
+theorem project_recvOnState_channels
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat)
+    (src' dst' : OcapnLean.Netlayer.Spec.Vat) :
+    (projectNetworkState (recvOnState ns src dst)).channels src' dst' =
+    ((OcapnLean.Captp.RuntimeFifo.Action.recv src dst).apply
+      (projectNetworkState ns)).channels src' dst' := by
+  by_cases heq : (src', dst') = (src, dst)
+  · have h1 : src' = src := (Prod.mk.inj heq).1
+    have h2 : dst' = dst := (Prod.mk.inj heq).2
+    subst src'; subst dst'
+    by_cases hbusy : (ns.get (src, dst)).received.size < (ns.get (src, dst)).sent.size
+    · exact project_recvOnState_at_modified_channel_busy ns src dst hbusy
+    · -- not busy: state unchanged on both sides
+      dsimp [projectNetworkState, recvOnState, projectChannelQueue,
+             OcapnLean.Captp.RuntimeFifo.Action.apply,
+             OcapnLean.Captp.RuntimeFifo.update]
+      simp [hbusy]
+  · exact project_recvOnState_at_other_channel ns src dst src' dst' heq
+
+/-! ## Full structure equality
+
+Combining the per-channel theorems with the trivial routesTo/targetRef
+equality (both projections produce the same default constant
+functions; the LTS actions don't touch them) gives the full
+`RuntimeState` equality. -/
+
+/-- **Full send correspondence (structure equality).** -/
+theorem project_sendOnState
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) (msg : ByteArray) :
+    projectNetworkState (sendOnState ns src dst msg) =
+      (OcapnLean.Captp.RuntimeFifo.Action.send src dst msg).apply
+        (projectNetworkState ns) := by
+  apply OcapnLean.Captp.RuntimeFifo.RuntimeState.ext
+  · funext src' dst'
+    exact project_sendOnState_channels ns src dst msg src' dst'
+  · rfl
+  · rfl
+
+/-- **Full recv correspondence (structure equality).** -/
+theorem project_recvOnState
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    projectNetworkState (recvOnState ns src dst) =
+      (OcapnLean.Captp.RuntimeFifo.Action.recv src dst).apply
+        (projectNetworkState ns) := by
+  apply OcapnLean.Captp.RuntimeFifo.RuntimeState.ext
+  · funext src' dst'
+    exact project_recvOnState_channels ns src dst src' dst'
+  · -- routesTo: both branches of recv preserve it
+    dsimp only [projectNetworkState, recvOnState,
+                OcapnLean.Captp.RuntimeFifo.Action.apply,
+                OcapnLean.Captp.RuntimeFifo.update]
+    split <;> rfl
+  · -- targetRef: same
+    dsimp only [projectNetworkState, recvOnState,
+                OcapnLean.Captp.RuntimeFifo.Action.apply,
+                OcapnLean.Captp.RuntimeFifo.update]
+    split <;> rfl
+
+/-! ## Trace-level lifting
+
+Lift the per-op correspondence to sequences of operations:
+running a list of network ops then projecting equals projecting then
+running the corresponding LTS actions. -/
+
+/-- A network-side operation: send or recv. -/
+inductive NetworkOp
+  | send (src dst : OcapnLean.Netlayer.Spec.Vat) (msg : ByteArray)
+  | recv (src dst : OcapnLean.Netlayer.Spec.Vat)
+
+def NetworkOp.apply
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState) : NetworkOp →
+    OcapnLean.Netlayer.InProcess.NetworkState
+  | .send src dst msg => sendOnState ns src dst msg
+  | .recv src dst     => recvOnState ns src dst
+
+/-- Translate a network op to the corresponding LTS action. -/
+def NetworkOp.toAction : NetworkOp → OcapnLean.Captp.RuntimeFifo.Action
+  | .send src dst msg => .send src dst msg
+  | .recv src dst     => .recv src dst
+
+/-- Per-op correspondence (unified for send and recv). -/
+theorem project_op_correspondence
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState) (op : NetworkOp) :
+    projectNetworkState (op.apply ns) =
+      op.toAction.apply (projectNetworkState ns) := by
+  cases op with
+  | send src dst msg => exact project_sendOnState ns src dst msg
+  | recv src dst     => exact project_recvOnState ns src dst
+
+/-- Run a sequence of network ops. -/
+def runNetworkOps
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState) (ops : List NetworkOp) :
+    OcapnLean.Netlayer.InProcess.NetworkState :=
+  ops.foldl (fun ns op => op.apply ns) ns
+
+/-- **Trace-level lifting.** Running a sequence of network ops then
+projecting equals projecting then running the corresponding LTS
+actions. -/
+theorem project_runNetworkOps
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState) (ops : List NetworkOp) :
+    projectNetworkState (runNetworkOps ns ops) =
+      OcapnLean.Captp.RuntimeFifo.runActions
+        (projectNetworkState ns) (ops.map NetworkOp.toAction) := by
+  induction ops generalizing ns with
+  | nil => rfl
+  | cons op ops ih =>
+    show projectNetworkState (runNetworkOps (op.apply ns) ops) =
+         OcapnLean.Captp.RuntimeFifo.runActions
+           (projectNetworkState ns) (op.toAction :: ops.map NetworkOp.toAction)
+    rw [ih (op.apply ns)]
+    rw [project_op_correspondence ns op]
+    rfl
+
+/-- The empty network state projects to `RuntimeFifo.initial`. -/
+theorem projectNetworkState_empty :
+    projectNetworkState (default : OcapnLean.Netlayer.InProcess.NetworkState) =
+      OcapnLean.Captp.RuntimeFifo.initial := by
+  apply OcapnLean.Captp.RuntimeFifo.RuntimeState.ext
+  · funext src dst
+    -- Default NetworkState has empty channels list; ns.get returns default.
+    -- projectChannelQueue default = empty queue.
+    rfl
+  · rfl
+  · rfl
+
+/-- **Headline:** any in-process `NetworkState` reachable via a
+sequence of network ops from the empty initial state projects to a
+`Reachable` `RuntimeFifo.RuntimeState`. Therefore it satisfies
+`InvDeliverIsPrefix` — the runtime per-channel prefix invariant. -/
+theorem network_state_reachable_via_ops_satisfies_prefix
+    (ops : List NetworkOp) :
+    OcapnLean.Captp.RuntimeFifo.InvDeliverIsPrefix
+      (projectNetworkState (runNetworkOps default ops)) := by
+  -- The projection is reachable from RuntimeFifo.initial via the
+  -- corresponding LTS actions.
+  have hreach : OcapnLean.Captp.RuntimeFifo.Reachable
+                  (projectNetworkState (runNetworkOps default ops)) := by
+    refine ⟨ops.map NetworkOp.toAction, ?_⟩
+    rw [← projectNetworkState_empty]
+    exact (project_runNetworkOps default ops).symm
+  exact OcapnLean.Captp.RuntimeFifo.InvDeliverIsPrefix.reachable _ hreach
 
 end OcapnLean.Captp.RuntimeFifoBridge

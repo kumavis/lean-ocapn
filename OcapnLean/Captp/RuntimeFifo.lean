@@ -72,6 +72,7 @@ abbrev RouteMap := Vat → Ref → Option Vat
 
 /-- Runtime state augmented with refs/routing for the per-(sender, ref)
 FIFO claim. -/
+@[ext]
 structure RuntimeState where
   channels  : Vat → Vat → ChannelQueue := fun _ _ => default
   routesTo  : RouteMap                  := fun _ _ => none
