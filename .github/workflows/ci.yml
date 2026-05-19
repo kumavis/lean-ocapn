@@ -446,7 +446,8 @@ jobs:
           set -o pipefail
           lake build \
             OcapnLean.Captp.Spec \
-            OcapnLean.Captp.Twoparty \
+            OcapnLean.Captp.Channels \
+            OcapnLean.Captp.RefFifo \
             OcapnLean.Captp.CrossedHellos \
             OcapnLean.Captp.Gc \
             OcapnLean.Captp.NoForgery \

@@ -58,7 +58,8 @@ the Lean module structure:
 | `OcapnLean.Syrup`             | Round-trip codec; `encode ∘ decode = id` and canonicalisation                   | Lean theorems (no Veil needed)          |
 | `OcapnLean.Captp.Messages`    | Algebraic types for `op:*` and `desc:*` messages                                | Pure Lean                               |
 | `OcapnLean.Captp.Spec`        | **Veil** module: state, transitions, invariants for one CapTP session pair      | Veil `#check_invariants`                |
-| `OcapnLean.Captp.Twoparty`    | Composition of two `Captp.Spec` instances over a FIFO channel                   | Veil + Lean simulation                  |
+| `OcapnLean.Captp.Channels`    | N-party `(src, dst)` FIFO channels — *fail-stop FIFO* (Miller §19)              | Veil `#check_invariants`                |
+| `OcapnLean.Captp.RefFifo`     | Channels + refs + routing + handoff — *end-to-end reference FIFO* (M11 Phase A) | Veil `#check_invariants`                |
 | `OcapnLean.Captp.Threeparty`  | Three-vat composition for handoff correctness                                   | Veil + Lean simulation                  |
 | `OcapnLean.Captp.Impl`        | Executable `IO`-based implementation                                            | Refinement lemma against `Captp.Spec`   |
 | `OcapnLean.Netlayer`          | Netlayer typeclass; reference TCP netlayer impl                                 | Property-based tests                    |
@@ -114,18 +115,20 @@ FIFO). For two peers the full module instantiates the above mirror.
 The first three are top priority; the rest are sequenced behind them. Each
 is stated as a `safety` clause plus the supporting `invariant` clauses.
 
-**Scoreboard (2026-05-15, 235 SMT theorems passing — Spec 143, Twoparty 48,
-Gc 18, CrossedHellos 12, NoForgery 8, Threeparty 6):**
+**Scoreboard (2026-05-19, 377 SMT theorems passing — Spec 155, Channels 48,
+RefFifo 110, Gc 18, CrossedHellos 12, NoForgery 8, NoForgeryForwarded 20,
+Threeparty 6):**
 
 | ID | Property | Status | Module |
 | --- | --- | --- | --- |
-| P1 | end-to-end reference FIFO (headline) | ✅ proved | `Captp/Twoparty.lean` |
+| P1 | fail-stop FIFO (per-channel basis) | ✅ proved | `Captp/Channels.lean` |
+| P1 | end-to-end reference FIFO (M11 Phase A) | ✅ proved (immutable-routing regime) | `Captp/RefFifo.lean` |
 | P2 | promise resolution monotonicity (×3) | ✅ proved | `Captp/Spec.lean` |
 | P3 | no-forgery (direct-send case) | ✅ proved (forwarding deferred) | `Captp/NoForgery.lean` |
 | P4 | GC soundness (wire-delta refcount) | ✅ proved | `Captp/Gc.lean` |
 | P5 | crossed-hellos determinism | ✅ proved | `Captp/CrossedHellos.lean` |
 | P6 | three-party handoff non-replay | ✅ proved | `Captp/Threeparty.lean` |
-| P7 | abort terminal | deferred (needs temporal tracking) | — |
+| P7 | abort terminal | ✅ proved (`wasAborted` ghost; safety `abort_terminal: wasAborted ↔ ¬ alive`) | `Captp/Spec.lean` |
 | P8 | bootstrap-at-zero | ✅ proved | `Captp/Spec.lean` |
 
 ### P1. End-to-end reference FIFO (the headline proof)

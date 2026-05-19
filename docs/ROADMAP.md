@@ -99,8 +99,9 @@ round-trip.
 
 **Goal:** prove **P1** from PLAN.md.
 
-- [x] `OcapnLean/Captp/Twoparty.lean` — composition of two peers over
-      explicit FIFO cursors
+- [x] `OcapnLean/Captp/Channels.lean` (originally `Twoparty.lean` — renamed
+      under M11 Phase A) — N-party `(src, dst)` FIFO channels, fail-stop
+      FIFO in Miller's *Robust Composition* §19 sense
 - [x] FIFO channel modelled with `pending`/`delivered`/`sentAt`/`deliveredAt`
       relations plus `sendCursor`/`recvCursor` per direction
 - [x] **`safety [e2e_fifo]`** — "messages delivered in same order sent"
@@ -317,55 +318,66 @@ for the prose framing and the taxonomy of fail-stop FIFO vs end-to-end
 reference FIFO vs causal order (Miller explicitly rejects causal order;
 end-to-end reference FIFO is the right target).
 
-### M11 Phase A — N-party reference-FIFO model with handoff _(landable result)_
+### M11 Phase A — N-party reference-FIFO model with handoff _(landed 2026-05-19)_
 
-Build a multi-vat channel model with references as first-class entities,
-and prove **end-to-end reference FIFO** under the *immutable-routing* regime
+Built a multi-vat channel model with references as first-class entities,
+and proved **end-to-end reference FIFO** under the *immutable-routing* regime
 (handoff adds new routing entries, never mutates existing ones).
 
-**Design discipline for drop-in B/C:** `routesTo` must be modeled as a
+**Design discipline for drop-in B/C:** `routesTo` is modeled as a
 mutable relation from the start, even though Phase A's actions only add to
-it. Don't fold `routesTo_functional` into a stronger "immutable" invariant
-that B would need to weaken — keep functionality as a one-step constraint,
-not an inductive equality across states.
+it. `routesTo_functional` is stated as a one-step constraint (∀ V R W1 W2,
+routesTo V R W1 ∧ routesTo V R W2 → W1 = W2), not as an inductive equality
+across states — so Phase B's mutating `shorten` can plug in without
+re-stating the invariant.
 
-- [ ] **`OcapnLean/Captp/Channels.lean`** — rename + N-party generalization of
-      `Twoparty.lean`. The channel state (`sendCursor`, `recvCursor`,
-      `pending`, `delivered`, `sentAt`, `deliveredAt`) is already polymorphic
-      in `vat`; just remove the implicit two-party reading from the prose and
-      re-discharge `e2e_fifo` (still per-(src, dst) pair = **fail-stop FIFO**
-      in Miller's taxonomy).
-- [ ] **`OcapnLean/Captp/RefFifo.lean`** (new) — introduces references:
+- [x] **`OcapnLean/Captp/Channels.lean`** — renamed from `Twoparty.lean`.
+      Docstring rewritten to use Miller's vocabulary (send → delivery; no
+      separate "process" stage) and to call out the per-(src, dst)
+      ordering as **fail-stop FIFO** rather than the unqualified
+      "end-to-end reference FIFO" the original prose claimed. **48 SMT
+      theorems** re-discharged unchanged (the `vat` sort was already
+      uninterpreted/N-valued; the rename is prose-only).
+- [x] **`OcapnLean/Captp/RefFifo.lean`** (new) — augments Channels with:
       - `type ref` (global identity, uninterpreted)
-      - `function targetRef : msg → ref` (per-message immutable)
-      - `relation routesTo : vat → ref → vat → Prop` (V routes msgs to R
-        via V→W; **mutable** state, but Phase A only adds)
-      - `invariant [routesTo_functional]` (each (V, R) routes to at most one W)
-      - `relation sentBy : vat → msg → Prop` (origin tracking;
-        independent of channel src so it survives mutation in Phase C)
-- [ ] **`safety [ref_fifo]`** — per-sender, per-ref delivery order matches
+      - `function targetRef : msg → ref` (oracle: unassigned, opaque)
+      - `relation routesTo : vat → ref → vat → Prop` (mutable, set by
+        `setupRoute` and `handoff` in Phase A)
+      - `relation sentBy : vat → msg → Prop` (origin tracking, channel-
+        independent so it survives Phase C re-routing)
+      - new actions `setupRoute` (primitive route population) and `handoff`
+        (idempotent additive route propagation)
+- [x] **`safety [ref_fifo]`** — per-sender, per-ref delivery order matches
       send order:
       ```
       sentBy S M1 ∧ sentBy S M2 ∧
-      targetRef M1 = R ∧ targetRef M2 = R ∧
-      delivered M1 ∧ delivered M2 ∧ K1 < K2 → J1 < J2
+      targetRef M1 = targetRef M2 ∧
+      delivered S D1 M1 ∧ delivered S D2 M2 ∧
+      sentAt S D1 M1 K1 ∧ sentAt S D2 M2 K2 ∧
+      deliveredAt S D1 M1 J1 ∧ deliveredAt S D2 M2 J2 ∧
+      K1 < K2 → J1 < J2
       ```
-      Discharged from `e2e_fifo` + `routesTo_functional` via the lemma
-      "same (sender, ref) ⇒ same channel (at least for delivered msgs) ⇒
-      channel FIFO applies."
-- [ ] **`action handoff (g r e : vat) (R : ref)`** — *additive only*:
-      requires `routesTo g R e`, adds `routesTo r R e`. Trivially preserves
-      `ref_fifo` (no existing routing entry mutates → no in-flight msg
-      changes channel mid-flight).
-- [ ] **`sat trace` witness** showing the happy 3-party handoff path:
-      Alice sends m₁ on R via Carol, hands R off to Bob, Bob sends m₂ on R
-      via Carol; Carol's delivery order matches Alice→Bob send order on R.
-- [ ] **Refresh `VERIFICATION.md`** with the new module's SMT count and the
-      Miller-vocabulary statement of the headline.
+      Discharged via `routesTo_functional` + the bridge invariant
+      `sentAt_via_route` (which forces D1 = D2 = routesTo S (targetRef M))
+      reducing to `e2e_fifo` on the now-equal channel.
+- [x] **`action handoff (g r e : vat) (rf : ref)`** — *additive only*:
+      requires `routesTo g rf e` and `∀ W, routesTo r rf W → W = e`
+      (idempotent / no conflict). Trivially preserves `ref_fifo` (no
+      existing routing entry mutates → no in-flight msg changes channel
+      mid-flight).
+- [x] **`sat trace [three_party_handoff_happy]`** — Alice routes to Carol
+      for R, sends m₁; hands R off to Bob; Bob sends m₂; Carol delivers
+      both. SMT finds a concrete model with three distinct vats — witness
+      that the spec admits the canonical 3-party reference handoff.
+- [x] **`VERIFICATION.md` refreshed** — new total **377 SMT theorems**
+      (was 267), now covering 9 named P-properties (was 8); the **+110**
+      from `RefFifo.lean` and **+1** new `sat trace` witness for the
+      3-party handoff.
 
-**Effort target:** ~1 week. The proof's inductive shape mirrors `Twoparty`'s
-`deliver_eq_send`-style invariants; the new piece is `routesTo_functional`
-and the per-ref bridging lemma.
+**Module breakdown (Phase A delta):**
+- Channels.lean: 48 thm (15 invariants + e2e_fifo, per init + send + deliver)
+- RefFifo.lean: 110 thm (20 invariants + e2e_fifo + ref_fifo, per init +
+  setupRoute + send + deliver + handoff) + 1 `sat trace` witness
 
 ### M11 Phase B — Promise shortening breaks `ref_fifo` _(counter-trace)_
 

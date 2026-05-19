@@ -6,22 +6,29 @@ proved using [Veil](https://github.com/verse-lab/veil).
 
 ## Status
 
-**Seven of the eight proposed proofs of behavior are mechanically discharged**
-(235 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants` —
-Spec 143, Twoparty 48, Gc 18, CrossedHellos 12, NoForgery 8, Threeparty 6):
+**All eight proposed proofs of behavior are mechanically discharged**
+(377 SMT theorems passing under Z3/cvc5 via Veil's `#check_invariants` —
+Spec 155, Channels 48, RefFifo 110, Gc 18, CrossedHellos 12, NoForgery 8,
+NoForgeryForwarded 20, Threeparty 6):
 
 | ID | Property | Module |
 | --- | --- | --- |
-| **P1** | end-to-end reference FIFO (headline) | `OcapnLean/Captp/Twoparty.lean` |
+| **P1** | fail-stop FIFO (per (src, dst) channel) | `OcapnLean/Captp/Channels.lean` |
+| **P1** | **end-to-end reference FIFO** (per (sender, ref), M11 Phase A) | `OcapnLean/Captp/RefFifo.lean` |
 | **P2** | promise resolution monotonicity (×3) | `OcapnLean/Captp/Spec.lean` |
 | **P3** | no-forgery (direct-send case) | `OcapnLean/Captp/NoForgery.lean` |
+| **P3** | no-forgery (forwarding case) | `OcapnLean/Captp/NoForgeryForwarded.lean` |
 | **P4** | GC soundness (wire-delta refcount) | `OcapnLean/Captp/Gc.lean` |
 | **P5** | crossed-hellos determinism | `OcapnLean/Captp/CrossedHellos.lean` |
 | **P6** | three-party handoff non-replay | `OcapnLean/Captp/Threeparty.lean` |
+| **P7** | abort terminal | `OcapnLean/Captp/Spec.lean` |
 | **P8** | bootstrap-at-zero | `OcapnLean/Captp/Spec.lean` |
 
-Remaining: **P7** abort terminal (deferred — needs temporal/history
-tracking, not a clean inductive state invariant in Veil v1).
+The terminology distinction between **fail-stop FIFO** (per-CapTP-session)
+and **end-to-end reference FIFO** (per logical reference, surviving
+handoff) follows Mark Miller's *Robust Composition* §19. See M11 in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the upgrade path to promise
+shortening + `op:flush` (Phases B and C).
 
 See [`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones.
@@ -48,7 +55,8 @@ ocapn-lean/
 │   ├── Captp/
 │   │   ├── Messages.lean       op:* / desc:* algebraic types
 │   │   ├── Spec.lean           Veil: single-peer  — proves P8, P2, listen-notify (143 thms)
-│   │   ├── Twoparty.lean       Veil: two-peer     — proves P1 (FIFO) (48 thms)
+│   │   ├── Channels.lean       Veil: N-party FIFO — proves P1 fail-stop FIFO (48 thms)
+│   │   ├── RefFifo.lean        Veil: refs + routing — proves P1 end-to-end ref FIFO (110 thms)
 │   │   ├── CrossedHellos.lean  Veil: handshake    — proves P5 (12 thms)
 │   │   ├── Gc.lean             Veil: refcounts    — proves P4 (18 thms)
 │   │   ├── NoForgery.lean      Veil: authority    — proves P3 (8 thms)

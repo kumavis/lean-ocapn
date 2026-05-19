@@ -17,8 +17,9 @@ for the first batch of safety proofs from PLAN.md:
 Tables and refcounts are abstracted to uninterpreted sorts and relations to
 keep the verification conditions in (or near) EPR.
 
-The two-peer composition for the FIFO proof (P1) lives in
-`OcapnLean.Captp.Twoparty`.
+The N-party channel composition for the fail-stop FIFO proof (the per-channel
+basis of P1) lives in `OcapnLean.Captp.Channels`. The end-to-end reference
+FIFO upgrade lives in `OcapnLean.Captp.RefFifo` (M11 Phase A).
 -/
 
 veil module CaptpSinglePeer

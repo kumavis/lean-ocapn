@@ -3,24 +3,37 @@ import Veil
 set_option linter.dupNamespace false
 
 /-!
-# CapTP two-peer composition — end-to-end reference FIFO
+# CapTP channels — **fail-stop FIFO** (per-(src, dst) pair)
 
-This module models *two* CapTP peers (vats) connected by per-direction
-reliable in-order channels, abstracted at the level of `op:deliver`
-messages and the cursors that drive them.
+This module models an arbitrary number of CapTP peers (vats) connected
+pairwise by per-direction reliable in-order channels, abstracted at the
+level of `op:deliver` messages and the cursors that drive them. Despite
+the original `Twoparty` framing, the `vat` sort is uninterpreted and
+N-valued — the only "two-ness" is that a channel relates a single
+ordered (src, dst) pair.
 
-The headline safety property is **P1** from PLAN.md:
+The headline safety property is **fail-stop FIFO** — what Mark Miller's
+*Robust Composition* §19 distinguishes from the stronger
+**end-to-end reference FIFO** target of M11. Using Miller's two-stage
+lifecycle vocabulary (send → delivery; no separate "process" stage):
 
-> For any two vats Alice and Bob, the order in which `op:deliver` messages
-> sent from Alice arrive at Bob's local delivery point is the same as the
-> order in which Alice's application code invoked the send.
+> For any sender vat S and destination vat D, the order in which `op:deliver`
+> messages sent by S are *delivered* at D matches the order in which S
+> *sent* them.
 
-The model is intentionally minimal — it abstracts the payload of each
-message and concentrates only on the send/deliver-order property. Later
-modules will refine the message contents.
+This is the **per-channel** ordering guarantee — strictly weaker than
+end-to-end reference FIFO because it does not relate messages whose
+target reference migrates across channels (handoff, promise shortening).
+The M11 milestone (`RefFifo.lean` and successors) upgrades this to
+end-to-end reference FIFO using these per-channel results as a building
+block.
+
+This module is intentionally minimal — it abstracts the payload of each
+message and concentrates only on the send/delivery-order property. The
+ref-aware extension lives in `OcapnLean.Captp.RefFifo`.
 -/
 
-veil module CaptpTwoparty
+veil module CaptpChannels
 
 -- Uninterpreted sorts.
 type vat
@@ -165,4 +178,4 @@ invariant [deliver_eq_send]
 
 #check_invariants
 
-end CaptpTwoparty
+end CaptpChannels
