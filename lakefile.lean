@@ -226,6 +226,7 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Impl.PromiseForwarding,
     `OcapnLean.Captp.RefinementMultiVat,
     `OcapnLean.Captp.RuntimeFifo,
+    `OcapnLean.Captp.RuntimeFifoBridge,
     `OcapnLean.Captp.Run,
     `OcapnLean.Captp.Bootstrap,
     `OcapnLean.Captp.Session,
