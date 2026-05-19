@@ -334,12 +334,23 @@ jobs:
 
       - name: Install Nix (for guile-goblins from nixpkgs)
         # guile-goblins isn't packaged for Ubuntu. nixpkgs ships
-        # guile-goblins-0.17.0 (matches our submodule pin), so we
-        # use nix-shell here the same way the local-dev recipe in
-        # docs/INTEROP.md does.
+        # guile-goblins-0.17.0, so we use nix-shell here the same way
+        # the local-dev recipe in docs/INTEROP.md does. Our submodule
+        # pin is v0.18.0; the CI exercises the legacy auth path that
+        # works against v0.17.
         uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Pre-fetch guile-goblins via nix
+        # Without this, the actual server-start step races a cold
+        # nix-store fetch (~100 MiB across 84 paths) against the
+        # 30-second wait loop below — observed to time out on cold
+        # GHA cache. Pre-fetching means the next step's nix-shell
+        # is a no-op so the loop only times the actual server start.
+        run: |
+          nix-shell -p guile guile-goblins guile-fibers \
+            --command 'guile --version >/dev/null'
 
       - name: Start Goblins websocket peer (background)
         run: |
@@ -348,7 +359,9 @@ jobs:
               scripts/diagnostics/goblins-ws-server.scm 22090" \
             > "$GITHUB_WORKSPACE/goblins-ws.log" 2>&1 &
           echo $! > "$GITHUB_WORKSPACE/goblins-ws.pid"
-          for i in $(seq 1 150); do
+          # 60s safety margin — Goblins itself typically reports
+          # ready in under 5s once the nix-shell is warm.
+          for i in $(seq 1 300); do
             grep -q "goblins-ws-ready" "$GITHUB_WORKSPACE/goblins-ws.log" \
               && break
             sleep 0.2
