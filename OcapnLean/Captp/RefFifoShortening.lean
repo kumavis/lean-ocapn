@@ -302,4 +302,52 @@ sat trace [shorten_drops_route_witness] {
     ¬ routesTo a p b)
 } by { bmc_sat }
 
+/-! ### Verification: does the Tribble race violate `ref_fifo_e2e` literally?
+
+`ref_fifo_e2e` from `RefFifoForwarding.lean` requires **both** msgs to
+traverse the same `(forwarder, dest)` channel pair:
+
+  sentAt S B M1 K1 ∧ sentAt S B M2 K2 ∧
+  forwardedAt B C M1 KF1 ∧ forwardedAt B C M2 KF2 ∧ ...
+  K1 < K2 → N1 < N2
+
+Under shortening, m₂ takes the **fast path** A→C directly — `sentAt S
+B m₂` and `forwardedAt B C m₂` are both false. So `ref_fifo_e2e`'s
+antecedent fails on the Tribble race and the safety is vacuously
+satisfied. Below: a sat trace witnessing exactly this — a state where
+the race occurs AND `ref_fifo_e2e`'s antecedent (both forwarded) is
+unsatisfiable for the racing msgs, so the literal safety holds while
+the intuitive race is realized.
+-/
+#guard_msgs(drop warning, drop info) in
+sat trace [race_with_e2e_safety_vacuous] {
+  declarePromise
+  setupRoute
+  send
+  deliver
+  resolvePromise
+  enableShortening
+  shorten
+  send
+  deliver
+  forward
+  deliver
+  assert (∃ (a b c : vat) (m1 m2 : msg),
+    a ≠ b ∧ a ≠ c ∧ b ≠ c ∧
+    sentBy a m1 ∧ sentBy a m2 ∧
+    targetRef m1 = targetRef m2 ∧
+    -- m₁ goes A→B→C (slow path, via forward).
+    (∃ k1, sentAt a b m1 k1) ∧
+    (∃ kf1, forwardedAt b c m1 kf1) ∧
+    delivered b c m1 ∧
+    -- m₂ goes A→C directly (fast path, post-shorten).
+    (∃ k2, sentAt a c m2 k2) ∧
+    delivered a c m2 ∧
+    -- The crucial structural fact: m₂ is NOT on the A→B channel,
+    -- so `ref_fifo_e2e`'s antecedent (sentAt S B M2 K2) is false.
+    (∀ k, ¬ sentAt a b m2 k) ∧
+    -- And m₂ is NOT forwarded by B, so forwardedAt B C M2 is false.
+    (∀ kf, ¬ forwardedAt b c m2 kf))
+} by { bmc_sat }
+
 end CaptpRefFifoShortening
