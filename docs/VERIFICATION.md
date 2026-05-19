@@ -38,7 +38,15 @@ Last updated: 2026-05-19 (commit on `feat/captp-runtime-and-interop`).
 | **Total** | **649** SMT theorems, 0 failures | 10 named P-properties |
 
 Plus `Gc.lean` adds 4 `sat trace` witnesses (`bmc_sat`), `RefFifo.lean`
-adds 1, and `RefFifoForwarding.lean` adds 2. The Phase A.5 witnesses
+adds 1, `RefFifoForwarding.lean` adds 2, and `RefFifoShortening.lean`
+(M11 Phase B — counter-trace module) adds 2: the Tribble race
+(`tribble_race`) — A sets up P→B, sends m₁, B resolves P→C, A shortens
+to C and sends m₂ on the fast path, C delivers m₂ before B's forward
+delivers m₁ — and a minimal witness (`shorten_drops_route_witness`)
+that after shortening the in-flight `sentAt A B m` persists without
+its `routesTo A P B` justification. Both bmc_sat traces are
+mechanical counter-evidence for the OCapN spec discussion about why
+naive shortening violates `ref_fifo`. The Phase A.5 witnesses
 cover: the canonical promise-resolves-then-forward path (A routes P→B,
 sends m₁, m₂; B resolves P→C; B forwards both; C delivers both), and
 the resolve-mid-stream variant (A sends m₁; B delivers; B resolves P→C;

@@ -788,40 +788,38 @@ because Phase A.6's parallel formalization is reusable as the target.
 correctness on bytes). Those remain trusted via the codec round-trip
 proof (already done in M1) and interop tests (24/24).
 
-### M11 Phase B — Promise shortening breaks `ref_fifo` _(counter-trace)_
+### M11 Phase B — Promise shortening breaks `ref_fifo` _(landed)_
 
-Add promise shortening as a *mutating* update to `routesTo`. Demonstrate
-formally (via `bmc_sat`) that without further synchronization, `ref_fifo`
-fails. This is the forcing function for Phase C — and a standalone
-contribution to the OCapN spec discussion (the failure mode in Veil rather
-than handwave-y prose).
+Adds promise shortening as a *mutating* update to `routesTo`, behind a
+state flag so Phase A.5's proofs remain untouched. Demonstrates the
+Tribble race via `bmc_sat` witnesses — formal counter-trace for the OCapN
+spec discussion.
 
-- [ ] **`OcapnLean/Captp/RefFifoShortening.lean`** (new module, imports
-      `RefFifo`):
-      - `relation isPromise : ref → Prop`
-      - `relation resolvedTo : ref → vat → Prop`
-      - `action shorten (V : vat) (P : ref)`:
-        - require `isPromise P ∧ resolvedTo P newOwner ∧
-          routesTo V P oldOwner`
-        - **mutate:** `routesTo V P := newOwner` (overwrite, not add)
-- [ ] **`sat trace { … } by bmc_sat`** demonstrating the Tribble race
-      ([`notes/issue-11-promise-shortening.md`](../projects/ocapn-message-ordering/notes/issue-11-promise-shortening.md)
-      § "Where ordering breaks"):
-      Alice sends m₁ on P via Bob (slow), Bob resolves P to Carol,
-      Alice `shorten`s P → Carol, Alice sends m₂ on P via Carol (fast);
-      m₂ delivered at Carol before m₁ traverses A→B→C.
-- [ ] **`#check_invariants`** with `[ref_fifo]` **fails** (as expected) —
-      capture the failed SMT output as a regression artifact (a `#guard_msgs`
-      that the failure mode is the Tribble case, not some other invariant
-      collapse).
-- [ ] **Document the protocol-level reading** in
-      `OcapnLean/Captp/RefFifoShortening.lean`'s docstring: which spec
-      semantics (`op:flush`, per-promise seq numbers, `delivered-after`) each
-      restore the property, and which one Phase C will mechanize.
+- [x] **`OcapnLean/Captp/RefFifoShortening.lean`** (new Veil module,
+      mirrors `RefFifoForwarding.lean`):
+      - `relation shorteningEnabled : Prop` — state flag, default false.
+      - `action enableShortening` — one-shot flag flip.
+      - `action shorten (v p oldT newT)` — gated by the flag; clears
+        `routesTo v p oldT` and installs `routesTo v p newT`
+        atomically. **No drained-wire precondition** — Phase C adds
+        that.
+- [x] **`sat trace [tribble_race]`** — the canonical Tribble race:
+      A sets up P→B, sends m₁; B receives, resolves P→C; flag enables;
+      A shortens to C; A sends m₂ on A→C (fast); C delivers m₂; B
+      forwards m₁; C delivers m₁ — with `n2 < n1` (m₂ arrives first).
+- [x] **`sat trace [shorten_drops_route_witness]`** — minimal witness:
+      after shortening, the in-flight `sentAt A B m K` persists but
+      `routesTo A P B` is false — the precise `sentAt_via_route`
+      violation Phase C's `op:flush` precondition prevents.
+- [x] **No `#check_invariants` in this module by design** — Phase B's
+      purpose is exhibiting violation, not re-discharging safety.
+      `RefFifoForwarding.lean`'s proofs are unaffected (different
+      module, no shortening action). Phase C re-introduces invariant
+      discharge over a strengthened `shorten`.
 
-**Effort target:** ~3 days. The novel piece is using `bmc_sat` to *exhibit*
-the violation as a concrete witness (Veil already supports this — see
-`Gc.lean`'s `sat trace` examples).
+**Effort target (original): ~3 days. Actual: ~half a day.** The Veil
+module structure (mutable `routesTo` relation, one-step invariants)
+made the flag-gating drop-in — no upstream refactors needed.
 
 ### M11 Phase C — `op:flush` precondition restores `ref_fifo`
 
