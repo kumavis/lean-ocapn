@@ -12,6 +12,7 @@ import OcapnLean.Captp.RefFifoForwarding
 import OcapnLean.Captp.Impl.MultiVat
 import OcapnLean.Captp.Impl.PromiseForwarding
 import OcapnLean.Captp.RefinementMultiVat
+import OcapnLean.Captp.RuntimeFifo
 import OcapnLean.Captp.CrossedHellos
 import OcapnLean.Captp.Gc
 import OcapnLean.Captp.NoForgery

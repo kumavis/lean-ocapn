@@ -16,7 +16,8 @@ Last updated: 2026-05-19 (commit on `feat/captp-runtime-and-interop`).
 |---|---|---|
 | **CapTP state machine** (Veil) | 10 named safety properties (P1–P8 + `ref_fifo` + `ref_fifo_e2e`) + 25+ supporting invariants, all preserved across all actions. Using Mark Miller's *Robust Composition* §19 vocabulary, `P1` now covers three layers: **fail-stop FIFO** (per (src, dst) channel, `Channels.lean`), **end-to-end reference FIFO at the routing target** (per (sender, ref) under immutable routing, `RefFifo.lean`), and **end-to-end reference FIFO across forwarding** (per (sender, ref) at the resolution host across the A→B→C chain, `RefFifoForwarding.lean`, M11 Phase A.5). | Z3 / cvc5 via Veil's SMT pipeline (`bv_decide` for the float64 atomic round-trip). |
 | **Refinement: Veil ↔ Lean impl (single-peer)** | `simulates : Impl.State → SpecState → Prop` plus initial / abort / exportNew / importNew lemmas. Lifting lemmas: `bootstrapAtZero_lifts`, `importedFunctional_lifts`, `exportedFunctional_lifts`, `crossedHellosUnique_lifts`, `gcSound_lifts`, `handoffNoReplay_lifts`, plus four vacuous lifts for the spec's promise / listener fields the impl doesn't yet track. | Hand-written Lean tactic scripts. |
-| **Refinement: Veil ↔ Lean *parallel model* (multi-vat, M11 Phase A.6)** | `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` relating the **pure-Lean parallel state machine** `Impl.MultiVat.State` to abstract Veil-side `ChannelsState` / `RefFifoState` / `RefFifoForwardingState`. Headline lifts: `e2e_fifo_lifts`, `ref_fifo_lifts`, `ref_fifo_e2e_lifts`. **Honest caveat:** `Impl.MultiVat` is a parallel formalization, *not* the runtime — `Captp.Session.run` doesn't construct MultiVat values. The lifts prove FIFO of the parallel state machine; closing the gap to runtime is M11 Phase A.7 (planned, not yet started). | Hand-written Lean tactic scripts. |
+| **Refinement: Veil ↔ Lean *parallel model* (multi-vat, M11 Phase A.6)** | `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` relating the **pure-Lean parallel state machine** `Impl.MultiVat.State` to abstract Veil-side `ChannelsState` / `RefFifoState` / `RefFifoForwardingState`. Headline lifts: `e2e_fifo_lifts`, `ref_fifo_lifts`, `ref_fifo_e2e_lifts`. | Hand-written Lean tactic scripts. |
+| **Runtime LTS + size-order invariant (M11 Phase A.7, chunk 2)** | `OcapnLean/Captp/RuntimeFifo.lean` defines a pure-Lean LTS over per-channel `(sent, received)` arrays (mirroring the IO operations of `Netlayer/InProcess`) with two atomic actions (`send`, `recv`). `InvSizeOrdered.reachable` proves: **every reachable runtime state has `received.size ≤ sent.size` on every channel** — the index-counting half of fail-stop FIFO at the runtime. Arbitrary interleavings handled structurally: actions are local to one channel, so per-step preservation composes through any trace. | Hand-written Lean (induction over action sequences). |
 | **Syrup codec** | Universal round-trip `decodeExt (encodeExt v) = some (v, [])` for **all** of `ValueExt` — atomic forms (bool, int, bytes, str, sym, float64) and arbitrarily nested containers (list, record, dict). Encoder injectivity (`encodeExt v₁ = encodeExt v₂ → v₁ = v₂`) follows as a corollary. Property-fuzz (`scripts/SyrupFuzz.lean`) provides a runtime sanity belt. | Lean (`decide` / `simp` / `bv_decide` / `ValueExt.rec` mutual induction). |
 | **Locators** | Round-trip `fromValueExt ∘ toValueExt = some` for `PeerLocator` and `SturdyRef`. URI round-trip with percent-encoded hint values. | Lean (`simp`, `native_decide`). |
 | **Cross-impl interop** | 24/24 against Python ref suite (this impl + @endo/ocapn). End-to-end TCP handshake against Ridley dobjects (with three opt-in flags for documented disagreements). End-to-end WebSocket handshake against Goblins v0.17 (legacy auth) and Goblins v0.18 (typed auth). | Runtime; gated in CI. |
@@ -149,18 +150,22 @@ CI does all of this on every push; see
 
 ## Known gaps
 
-* **Runtime is not refined to `Impl.MultiVat` (M11 Phase A.7 gap).**
-  Phase A.6 introduced `Impl.MultiVat` as a pure-Lean parallel state
-  machine and lifted Veil-proved FIFO properties onto it. But the
-  actually-running CapTP code (`Captp.Session.run`,
-  `Captp.Run.runHandler`, the TCP/WebSocket event loop) does not
-  construct `Impl.MultiVat.State` values and is not formally connected
-  to the lifts. So today's true claim is: **the parallel formalization
-  has FIFO; the runtime is trusted (interop tests, 24/24)**. Closing
-  this gap is M11 Phase A.7 — a runtime trace semantics + a projection
-  to `Impl.MultiVat.State` + a step-preservation proof. The
-  `multi-vat-fifo-smoke` script exercises the parallel state machine's
-  step functions concretely but doesn't bridge to the runtime.
+* **Runtime is partially refined; full coverage still in progress
+  (M11 Phase A.7 gap).** Phase A.6 introduced `Impl.MultiVat` as a
+  pure-Lean parallel state machine and lifted Veil-proved FIFO
+  properties onto it. Phase A.7 chunk 1 added an in-process `Netlayer`
+  (`OcapnLean/Netlayer/InProcess.lean`) with `IO.Ref`-protected
+  per-channel queues plus the `multi-vat-fifo-smoke` over real
+  concurrent send/recv. Phase A.7 chunk 2 proved
+  `InvSizeOrdered.reachable` for the runtime LTS — every reachable
+  runtime state has `received.size ≤ sent.size` on every channel,
+  i.e. the index-counting half of fail-stop FIFO. **Still pending**:
+  the contents-match invariant (`received[j] = sent[j]` at every
+  prefix index), the ref-FIFO / ref-FIFO-e2e claims at the runtime
+  level, and the connection from this LTS to the `Captp.Session.run`
+  event loop (Stage 5 of the Phase A.7 plan in ROADMAP). The
+  in-process netlayer's contract proof (`Netlayer/Spec.lean`'s
+  `Valid` predicate) is also still pending.
 * **`Captp.Impl` doesn't grow promises / forwarding at the runtime
   level.** Phase A.6's `Impl/PromiseForwarding.lean` is part of the
   parallel formalization (see above) — not new behavior in
