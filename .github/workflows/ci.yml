@@ -58,7 +58,7 @@ jobs:
           lake build OcapnLean ocapn-server \
             client-smoke client-vs-external client-vs-uds \
             sturdyref-smoke ws-smoke ws-auth-smoke \
-            syrup-fuzz \
+            syrup-fuzz multi-vat-fifo-smoke \
             uds-smoke session-handshake-smoke enlivener-smoke
 
       - name: In-process smoke tests
@@ -72,6 +72,7 @@ jobs:
           ./.lake/build/bin/ws-smoke
           ./.lake/build/bin/ws-auth-smoke
           ./.lake/build/bin/syrup-fuzz
+          ./.lake/build/bin/multi-vat-fifo-smoke
 
       - name: Run server in background
         run: |

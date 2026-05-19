@@ -31,6 +31,12 @@ handoff) follows Mark Miller's *Robust Composition* §19. See M11 in
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for the upgrade path to promise
 shortening + `op:flush` (Phases B and C).
 
+All three P1 tiers are also **refined to the multi-vat impl** (M11 Phase A.6,
+`OcapnLean.Captp.RefinementMultiVat`) via `e2e_fifo_lifts`, `ref_fifo_lifts`,
+and `ref_fifo_e2e_lifts`. The runtime smoke
+(`./.lake/build/bin/multi-vat-fifo-smoke`) exercises the canonical
+A→P→B→resolves→C scenario on the impl state.
+
 See [`docs/PLAN.md`](docs/PLAN.md) for the proof plan and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones.
 
@@ -59,6 +65,9 @@ ocapn-lean/
 │   │   ├── Channels.lean       Veil: N-party FIFO — proves P1 fail-stop FIFO (48 thms)
 │   │   ├── RefFifo.lean        Veil: refs + routing — proves P1 ref FIFO @ routing target (110 thms)
 │   │   ├── RefFifoForwarding.lean  Veil: promises + forwarding — proves P1 ref FIFO @ resolution host (272 thms)
+│   │   ├── Impl/MultiVat.lean      N-vat compositional impl model (M11 Phase A.6)
+│   │   ├── Impl/PromiseForwarding.lean  impl-side promise resolution + forwarding actions
+│   │   ├── RefinementMultiVat.lean      multi-vat refinement: lifts all three P1 tiers to impl
 │   │   ├── CrossedHellos.lean  Veil: handshake    — proves P5 (12 thms)
 │   │   ├── Gc.lean             Veil: refcounts    — proves P4 (18 thms)
 │   │   ├── NoForgery.lean      Veil: authority    — proves P3 (8 thms)

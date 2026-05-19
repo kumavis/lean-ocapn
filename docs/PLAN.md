@@ -61,6 +61,8 @@ the Lean module structure:
 | `OcapnLean.Captp.Channels`    | N-party `(src, dst)` FIFO channels — *fail-stop FIFO* (Miller §19)              | Veil `#check_invariants`                |
 | `OcapnLean.Captp.RefFifo`     | Channels + refs + routing + handoff — *end-to-end reference FIFO at routing target* (M11 Phase A) | Veil `#check_invariants`                |
 | `OcapnLean.Captp.RefFifoForwarding` | RefFifo + promise resolution + forwarding — *end-to-end reference FIFO across A→B→C forwarding* (M11 Phase A.5) | Veil `#check_invariants` |
+| `OcapnLean.Captp.Impl.MultiVat` + `Impl.PromiseForwarding` | N-vat compositional impl model + promise / forwarding actions (M11 Phase A.6) | Pure-Lean state machine |
+| `OcapnLean.Captp.RefinementMultiVat` | Multi-vat refinement: `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` + three headline lifts | Hand-written Lean refinement |
 | `OcapnLean.Captp.Threeparty`  | Three-vat composition for handoff correctness                                   | Veil + Lean simulation                  |
 | `OcapnLean.Captp.Impl`        | Executable `IO`-based implementation                                            | Refinement lemma against `Captp.Spec`   |
 | `OcapnLean.Netlayer`          | Netlayer typeclass; reference TCP netlayer impl                                 | Property-based tests                    |

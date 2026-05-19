@@ -515,7 +515,7 @@ messages on A→C (post-shorten)." Phase A.5's `ref_fifo_e2e` is exactly
 the property shortening breaks — so Phase A.5 must land first to give
 Phase B a non-vacuous baseline to violate.
 
-### M11 Phase A.6 — Impl-level refinement of ref FIFO _(opened 2026-05-19)_
+### M11 Phase A.6 — Impl-level refinement of ref FIFO _(landed 2026-05-19)_
 
 Lift the spec-level FIFO proofs (Phases A and A.5) to the executable
 implementation. Today `e2e_fifo`, `ref_fifo`, and `ref_fifo_e2e` are
@@ -544,7 +544,7 @@ spec is solid.
 
 **Steps:**
 
-- [ ] **`OcapnLean/Captp/Impl/MultiVat.lean`** (new) — N-vat
+- [x] **`OcapnLean/Captp/Impl/MultiVat.lean`** (new) — N-vat
       compositional model. Today `Impl.State` is one peer's view of
       one session. This module wraps it into
       `MultiVatState := Map vat Impl.State` plus per-pair channel
@@ -556,14 +556,14 @@ spec is solid.
       An `MultiVatState.step` operation models one impl action (send,
       deliver, handoff) atomically.
 
-- [ ] **`OcapnLean/Captp/RefinementMultiVat.lean`** (new) — simulation
+- [x] **`OcapnLean/Captp/RefinementMultiVat.lean`** (new) — simulation
       relation `simulates_multi : MultiVatState → Channels._st`,
       mapping each Impl-side cursor/queue to its Veil counterpart.
       Lifting lemmas for each Impl action (`Impl.send`, `Impl.deliver`)
       proving simulation-preservation. Headline: `e2e_fifo_lifts`
       — fail-stop FIFO at the impl level.
 
-- [ ] **Augment `Impl.MultiVatState` with refs, routing, sentBy** —
+- [x] **Augment `Impl.MultiVatState` with refs, routing, sentBy** —
       mirrors `RefFifo.lean`'s additions. Each vat's Impl already
       tracks *which* refs it has imported/exported via its
       import/export tables; this phase adds a `routesTo` map
@@ -572,12 +572,12 @@ spec is solid.
       becomes a derived field on `Msg` (the `desc:export`/`desc:answer`
       position inside `op:deliver` resolved to a `ref` identity).
 
-- [ ] **Refinement to `RefFifo.lean`** — extend `simulates_multi` to
+- [x] **Refinement to `RefFifo.lean`** — extend `simulates_multi` to
       cover refs/routing/origin state. Lifting lemmas for
       `setupRoute`, `handoff`. Headline: `ref_fifo_lifts` — per-(sender,
       ref) FIFO at the routing target, at the impl level.
 
-- [ ] **`OcapnLean/Captp/Impl/PromiseForwarding.lean`** (new) —
+- [x] **`OcapnLean/Captp/Impl/PromiseForwarding.lean`** (new) —
       adds the missing impl features for Phase A.5's claims:
       - **Promise table** — each vat tracks `isPromise : ref → Bool`
         and `resolvedTo : ref → Option vat`. Set when the peer learns
@@ -592,14 +592,14 @@ spec is solid.
         a direct re-emit on the new channel (the abstraction the spec
         already uses).
 
-- [ ] **Refinement to `RefFifoForwarding.lean`** — extend
+- [x] **Refinement to `RefFifoForwarding.lean`** — extend
       `simulates_multi` to cover `isPromise`, `resolvedTo`, `forwardedAt`.
       Lifting lemmas for `declarePromise`, `resolvePromise`, `forward`.
       **Headline: `ref_fifo_e2e_lifts`** — end-to-end reference FIFO at
       the resolution host, at the impl level. This is the impl-level
       version of M11's user-facing claim.
 
-- [ ] **End-to-end runtime test** — `scripts/MultiVatFifoSmoke.lean` or
+- [x] **End-to-end runtime test** — `scripts/MultiVatFifoSmoke.lean` or
       similar. Spin up three Impl peers (in-process via direct channels,
       or over TCP via netlayer), exercise the canonical scenario: A
       sends m₁, m₂ to a promise held at B; B resolves to C; B forwards
@@ -607,7 +607,7 @@ spec is solid.
       formal refinement — analogous to how `client-smoke` and
       `sturdyref-smoke` exercise the single-peer impl.
 
-- [ ] **VERIFICATION.md / PLAN.md refresh** — update the at-a-glance
+- [x] **VERIFICATION.md / PLAN.md refresh** — update the at-a-glance
       table and the per-module refinement matrix. After Phase A.6, the
       P1 row reads: "fail-stop FIFO, ref FIFO at routing target, ref
       FIFO across forwarding — all three proved at the spec level and

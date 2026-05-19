@@ -15,7 +15,8 @@ Last updated: 2026-05-19 (commit on `feat/captp-runtime-and-interop`).
 | Layer | Verified properties | Discharger |
 |---|---|---|
 | **CapTP state machine** (Veil) | 10 named safety properties (P1–P8 + `ref_fifo` + `ref_fifo_e2e`) + 25+ supporting invariants, all preserved across all actions. Using Mark Miller's *Robust Composition* §19 vocabulary, `P1` now covers three layers: **fail-stop FIFO** (per (src, dst) channel, `Channels.lean`), **end-to-end reference FIFO at the routing target** (per (sender, ref) under immutable routing, `RefFifo.lean`), and **end-to-end reference FIFO across forwarding** (per (sender, ref) at the resolution host across the A→B→C chain, `RefFifoForwarding.lean`, M11 Phase A.5). | Z3 / cvc5 via Veil's SMT pipeline (`bv_decide` for the float64 atomic round-trip). |
-| **Refinement: Veil ↔ Lean impl** | `simulates : Impl.State → SpecState → Prop` plus initial / abort / exportNew / importNew lemmas. Lifting lemmas: `bootstrapAtZero_lifts`, `importedFunctional_lifts`, `exportedFunctional_lifts`, `crossedHellosUnique_lifts`, `gcSound_lifts`, `handoffNoReplay_lifts`, plus four vacuous lifts for the spec's promise / listener fields the impl doesn't yet track. | Hand-written Lean tactic scripts. |
+| **Refinement: Veil ↔ Lean impl (single-peer)** | `simulates : Impl.State → SpecState → Prop` plus initial / abort / exportNew / importNew lemmas. Lifting lemmas: `bootstrapAtZero_lifts`, `importedFunctional_lifts`, `exportedFunctional_lifts`, `crossedHellosUnique_lifts`, `gcSound_lifts`, `handoffNoReplay_lifts`, plus four vacuous lifts for the spec's promise / listener fields the impl doesn't yet track. | Hand-written Lean tactic scripts. |
+| **Refinement: Veil ↔ Lean impl (multi-vat, M11 Phase A.6)** | `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` relating `Impl.MultiVat.State` to abstract Veil-side `ChannelsState` / `RefFifoState` / `RefFifoForwardingState`. Canonical projection (`canonicalAbstract*`) gives the simulation by definition. Headline lifts: `e2e_fifo_lifts` (fail-stop FIFO), `ref_fifo_lifts` (per-(sender, ref) FIFO at routing target), `ref_fifo_e2e_lifts` (end-to-end per-(sender, ref) FIFO across A→B→C forwarding). | Hand-written Lean tactic scripts. |
 | **Syrup codec** | Universal round-trip `decodeExt (encodeExt v) = some (v, [])` for **all** of `ValueExt` — atomic forms (bool, int, bytes, str, sym, float64) and arbitrarily nested containers (list, record, dict). Encoder injectivity (`encodeExt v₁ = encodeExt v₂ → v₁ = v₂`) follows as a corollary. Property-fuzz (`scripts/SyrupFuzz.lean`) provides a runtime sanity belt. | Lean (`decide` / `simp` / `bv_decide` / `ValueExt.rec` mutual induction). |
 | **Locators** | Round-trip `fromValueExt ∘ toValueExt = some` for `PeerLocator` and `SturdyRef`. URI round-trip with percent-encoded hint values. | Lean (`simp`, `native_decide`). |
 | **Cross-impl interop** | 24/24 against Python ref suite (this impl + @endo/ocapn). End-to-end TCP handshake against Ridley dobjects (with three opt-in flags for documented disagreements). End-to-end WebSocket handshake against Goblins v0.17 (legacy auth) and Goblins v0.18 (typed auth). | Runtime; gated in CI. |
@@ -133,7 +134,7 @@ lake build OcapnLean.Captp.Spec OcapnLean.Captp.Channels OcapnLean.Captp.RefFifo
 # Run the in-process smoke suite (covers the impl + codec end-to-end).
 for t in crypto-smoke session-handshake-smoke enlivener-smoke \
          client-smoke sturdyref-smoke uds-smoke ws-smoke \
-         ws-auth-smoke syrup-fuzz; do
+         ws-auth-smoke syrup-fuzz multi-vat-fifo-smoke; do
   ./.lake/build/bin/$t || exit 1
 done
 
@@ -148,6 +149,17 @@ CI does all of this on every push; see
 
 ## Known gaps
 
+* **`Captp.Impl` doesn't grow promises / forwarding at the runtime level.**
+  M11 Phase A.6 added `Impl/PromiseForwarding.lean` with `resolvePromise`
+  and `forward` as pure state-step functions; the refinement lifts use
+  them via `simulatesRefFifoForwarding`. But the runtime
+  (`Captp.Session`, `Captp.Run`) doesn't yet route incoming `op:deliver`
+  msgs through the forwarding loop — the impl runs as single-peer
+  today. Bridging is a separate runtime feature; the formal refinement
+  already commits to *what* the impl must do if it implements
+  forwarding, and the multi-vat smoke
+  (`scripts/MultiVatFifoSmoke.lean`) exercises the state-step functions
+  end-to-end.
 * **Refinement for promise / listener tables.** The Veil spec
   tracks `promiseResolved`, `promiseBroken`, `listening`, and
   `listenerNotified`; the executable impl doesn't yet, so the

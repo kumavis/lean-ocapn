@@ -294,6 +294,11 @@ lean_exe «syrup-fuzz» where
   srcDir := "."
   moreLinkArgs := shimLinkArgs
 
+lean_exe «multi-vat-fifo-smoke» where
+  root := `scripts.MultiVatFifoSmoke
+  srcDir := "."
+  moreLinkArgs := shimLinkArgs
+
 lean_exe «ws-smoke» where
   root := `scripts.WsSmoke
   srcDir := "."
