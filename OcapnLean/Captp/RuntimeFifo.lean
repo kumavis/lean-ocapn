@@ -817,4 +817,30 @@ theorem runtime_forward_order_preserved
   have hinv := InvForwardedAgreesWithSent.reachable s hreach
   exact ⟨hinv b c msg1 i1 hf1, hinv b c msg2 i2 hf2⟩
 
+/-- **Runtime ref-FIFO-e2e** (full headline). For any reachable
+runtime state, if forwarder `b` forwarded msg₁ at index `i₁` and msg₂
+at index `i₂` on the `b→c` wire, and `c` has received both (i.e.,
+i₁ < (b→c).received.size and i₂ < (b→c).received.size), then the
+msgs at received positions `i₁` and `i₂` are msg₁ and msg₂
+respectively. **Interpretation:** msgs that were forwarded earlier
+arrive earlier — forwarding order is preserved end-to-end at the
+resolution host. Combined with `routesTo` functionality (each
+(sender, ref) maps to at most one destination), this is the runtime
+analog of Phase A.5's `ref_fifo_e2e`. -/
+theorem runtime_ref_fifo_e2e
+    (s : RuntimeState) (hreach : Reachable s)
+    (b c : Vat) (msg1 msg2 : ByteArray) (i1 i2 : Nat)
+    (hf1 : s.forwardedAt b c msg1 = some i1)
+    (hf2 : s.forwardedAt b c msg2 = some i2)
+    (hr1 : i1 < (s.channels b c).received.size)
+    (hr2 : i2 < (s.channels b c).received.size) :
+    (s.channels b c).received[i1]? = some msg1 ∧
+    (s.channels b c).received[i2]? = some msg2 := by
+  have ⟨hs1, hs2⟩ := runtime_forward_order_preserved s hreach b c msg1 msg2 i1 i2 hf1 hf2
+  have hrec1 : (s.channels b c).received[i1]? = (s.channels b c).sent[i1]? :=
+    runtime_received_matches_sent s hreach b c i1 hr1
+  have hrec2 : (s.channels b c).received[i2]? = (s.channels b c).sent[i2]? :=
+    runtime_received_matches_sent s hreach b c i2 hr2
+  exact ⟨hrec1.trans hs1, hrec2.trans hs2⟩
+
 end OcapnLean.Captp.RuntimeFifo
