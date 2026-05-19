@@ -9,6 +9,8 @@ import OcapnLean.Captp.Spec
 import OcapnLean.Captp.Channels
 import OcapnLean.Captp.RefFifo
 import OcapnLean.Captp.RefFifoForwarding
+import OcapnLean.Captp.Impl.MultiVat
+import OcapnLean.Captp.RefinementMultiVat
 import OcapnLean.Captp.CrossedHellos
 import OcapnLean.Captp.Gc
 import OcapnLean.Captp.NoForgery

@@ -219,6 +219,8 @@ lean_lib OcapnLean where
     `OcapnLean.Captp.Impl,
     `OcapnLean.Captp.Refinement,
     `OcapnLean.Captp.RefinementExtended,
+    `OcapnLean.Captp.Impl.MultiVat,
+    `OcapnLean.Captp.RefinementMultiVat,
     `OcapnLean.Captp.Run,
     `OcapnLean.Captp.Bootstrap,
     `OcapnLean.Captp.Session,
