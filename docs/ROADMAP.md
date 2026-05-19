@@ -515,6 +515,136 @@ messages on A→C (post-shorten)." Phase A.5's `ref_fifo_e2e` is exactly
 the property shortening breaks — so Phase A.5 must land first to give
 Phase B a non-vacuous baseline to violate.
 
+### M11 Phase A.6 — Impl-level refinement of ref FIFO _(opened 2026-05-19)_
+
+Lift the spec-level FIFO proofs (Phases A and A.5) to the executable
+implementation. Today `e2e_fifo`, `ref_fifo`, and `ref_fifo_e2e` are
+properties of the Veil action model in `Channels.lean`, `RefFifo.lean`,
+and `RefFifoForwarding.lean`. The runnable Lean code in `Captp/Impl.lean`
+implements one peer's view of one session, and the existing refinement
+layer (`Refinement.lean`, `RefinementExtended.lean`) connects only the
+**single-peer** properties (P2, P4, P5, P6, P8). All three tiers of P1
+remain **spec-only**.
+
+**Why this matters:** the headline claim of M11 is "end-to-end reference
+FIFO." Without impl refinement, that's only true of the Veil model — the
+runnable Lean code is checked against other implementations on the wire
+(interop tests, 24/24) but has no formal connection to the FIFO proof.
+Once Phase A.6 lands, the headline holds of the runnable code itself
+(modulo the trusted netlayer + Syrup codec, which are verified
+separately — Syrup codec round-trip in M1, netlayer behavior in
+interop tests).
+
+**Scope:** impl-refinement of fail-stop FIFO (Channels), ref FIFO at
+routing target (RefFifo), and ref FIFO across forwarding
+(RefFifoForwarding). Phase B's counter-trace doesn't need refinement
+(it's about violation, not preservation); Phase C's `op:flush` would
+get its own follow-on impl-refinement phase (call it C.6) once the
+spec is solid.
+
+**Steps:**
+
+- [ ] **`OcapnLean/Captp/Impl/MultiVat.lean`** (new) — N-vat
+      compositional model. Today `Impl.State` is one peer's view of
+      one session. This module wraps it into
+      `MultiVatState := Map vat Impl.State` plus per-pair channel
+      state mirroring the Veil model's
+      `pending`/`delivered`/`sentAt`/`deliveredAt` relations. Channels
+      are ordered queues of `Msg`s — the Lean side abstracts the
+      TCP/WebSocket wire (which is the trusted netlayer's job to keep
+      FIFO per-channel, as exercised by interop tests).
+      An `MultiVatState.step` operation models one impl action (send,
+      deliver, handoff) atomically.
+
+- [ ] **`OcapnLean/Captp/RefinementMultiVat.lean`** (new) — simulation
+      relation `simulates_multi : MultiVatState → Channels._st`,
+      mapping each Impl-side cursor/queue to its Veil counterpart.
+      Lifting lemmas for each Impl action (`Impl.send`, `Impl.deliver`)
+      proving simulation-preservation. Headline: `e2e_fifo_lifts`
+      — fail-stop FIFO at the impl level.
+
+- [ ] **Augment `Impl.MultiVatState` with refs, routing, sentBy** —
+      mirrors `RefFifo.lean`'s additions. Each vat's Impl already
+      tracks *which* refs it has imported/exported via its
+      import/export tables; this phase adds a `routesTo` map
+      (`vat → ref → vat`, the routing decision per (vat, ref)) and a
+      `sentBy` tracker (`msg → vat`, the originator). `targetRef`
+      becomes a derived field on `Msg` (the `desc:export`/`desc:answer`
+      position inside `op:deliver` resolved to a `ref` identity).
+
+- [ ] **Refinement to `RefFifo.lean`** — extend `simulates_multi` to
+      cover refs/routing/origin state. Lifting lemmas for
+      `setupRoute`, `handoff`. Headline: `ref_fifo_lifts` — per-(sender,
+      ref) FIFO at the routing target, at the impl level.
+
+- [ ] **`OcapnLean/Captp/Impl/PromiseForwarding.lean`** (new) —
+      adds the missing impl features for Phase A.5's claims:
+      - **Promise table** — each vat tracks `isPromise : ref → Bool`
+        and `resolvedTo : ref → Option vat`. Set when the peer learns
+        the resolution (today's spec module `Captp.Spec` already has
+        `resolvePromise`; this lifts it to the multi-vat impl).
+      - **Forwarding loop** — when a delivered msg's target ref is a
+        resolved promise routing through this vat, re-emit the msg
+        onto the forwarding channel toward the resolution host.
+        Implements the spec's `forward` action.
+      - **Wire-protocol mapping** — real CapTP would re-emit as an
+        `op:deliver` to a forwarded position; this phase models it as
+        a direct re-emit on the new channel (the abstraction the spec
+        already uses).
+
+- [ ] **Refinement to `RefFifoForwarding.lean`** — extend
+      `simulates_multi` to cover `isPromise`, `resolvedTo`, `forwardedAt`.
+      Lifting lemmas for `declarePromise`, `resolvePromise`, `forward`.
+      **Headline: `ref_fifo_e2e_lifts`** — end-to-end reference FIFO at
+      the resolution host, at the impl level. This is the impl-level
+      version of M11's user-facing claim.
+
+- [ ] **End-to-end runtime test** — `scripts/MultiVatFifoSmoke.lean` or
+      similar. Spin up three Impl peers (in-process via direct channels,
+      or over TCP via netlayer), exercise the canonical scenario: A
+      sends m₁, m₂ to a promise held at B; B resolves to C; B forwards
+      both; C receives both in order. Runtime sanity belt on top of the
+      formal refinement — analogous to how `client-smoke` and
+      `sturdyref-smoke` exercise the single-peer impl.
+
+- [ ] **VERIFICATION.md / PLAN.md refresh** — update the at-a-glance
+      table and the per-module refinement matrix. After Phase A.6, the
+      P1 row reads: "fail-stop FIFO, ref FIFO at routing target, ref
+      FIFO across forwarding — all three proved at the spec level and
+      refined to the multi-vat impl."
+
+**Effort target:** ~4 weeks. Multi-vat composition (~1 week) is the
+biggest single piece; promise resolution + forwarding in Impl (~1 week)
+is mostly new impl code; refinement lemmas across three tiers (~1.5
+weeks) borrow the pattern from `RefinementExtended.lean`; runtime test
++ docs (~0.5 week).
+
+**Risks:**
+- **Multi-vat impl model might diverge from real-world deployment.**
+  Real CapTP runs each vat as a separate process with its own Impl.State;
+  the multi-vat model collapses them into a single Lean value. This
+  is fine for the *proof* (the proof is about the *protocol behavior*,
+  not the process model) but means the runtime test must explicitly
+  exercise the in-process abstraction.
+- **Promise resolution in Impl is genuinely new code** — `Captp.Spec`
+  has `resolvePromise` as a Veil action, but `Captp.Impl` has no
+  promise table today. The impl-side promise table needs to handle:
+  promise creation (`op:deliver` with `desc:export` positions),
+  resolution (`desc:answer` or via the resolver capability), and
+  forwarding (the loop driven by `resolvedTo` lookup at delivery time).
+- **SMT discharge of refinement lemmas may be slower** — adding refs +
+  routing + promises to the simulation relation adds quantifiers; some
+  of the new lifting lemmas may need decomposition (the existing
+  `*_lifts` are hand-written Lean tactic scripts, not SMT-discharged).
+
+**Relationship to existing refinement:**
+- `Refinement.lean` (single-peer): unchanged.
+- `RefinementExtended.lean` (single-peer extended actions): unchanged.
+- `RefinementMultiVat.lean` (new): the parallel for multi-vat properties.
+- Both can coexist — the single-peer lifts continue to give P2, P4, P5,
+  P6, P8 at the impl level; the new multi-vat lifts add the three P1
+  tiers.
+
 ### M11 Phase B — Promise shortening breaks `ref_fifo` _(counter-trace)_
 
 Add promise shortening as a *mutating* update to `routesTo`. Demonstrate
