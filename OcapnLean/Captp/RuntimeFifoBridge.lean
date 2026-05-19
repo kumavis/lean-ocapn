@@ -295,8 +295,11 @@ theorem project_sendOnState
   apply OcapnLean.Captp.RuntimeFifo.RuntimeState.ext
   · funext src' dst'
     exact project_sendOnState_channels ns src dst msg src' dst'
-  · rfl
-  · rfl
+  · rfl  -- routesTo
+  · rfl  -- targetRef
+  · rfl  -- isPromise
+  · rfl  -- resolvedTo
+  · rfl  -- forwardedAt
 
 /-- **Full recv correspondence (structure equality).** -/
 theorem project_recvOnState
@@ -308,16 +311,11 @@ theorem project_recvOnState
   apply OcapnLean.Captp.RuntimeFifo.RuntimeState.ext
   · funext src' dst'
     exact project_recvOnState_channels ns src dst src' dst'
-  · -- routesTo: both branches of recv preserve it
+  all_goals (
     dsimp only [projectNetworkState, recvOnState,
                 OcapnLean.Captp.RuntimeFifo.Action.apply,
                 OcapnLean.Captp.RuntimeFifo.update]
-    split <;> rfl
-  · -- targetRef: same
-    dsimp only [projectNetworkState, recvOnState,
-                OcapnLean.Captp.RuntimeFifo.Action.apply,
-                OcapnLean.Captp.RuntimeFifo.update]
-    split <;> rfl
+    split <;> rfl)
 
 /-! ## Trace-level lifting
 
@@ -383,8 +381,7 @@ theorem projectNetworkState_empty :
     -- Default NetworkState has empty channels list; ns.get returns default.
     -- projectChannelQueue default = empty queue.
     rfl
-  · rfl
-  · rfl
+  all_goals rfl
 
 /-- **Headline:** any in-process `NetworkState` reachable via a
 sequence of network ops from the empty initial state projects to a

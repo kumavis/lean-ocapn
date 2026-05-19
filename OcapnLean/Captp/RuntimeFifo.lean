@@ -71,12 +71,21 @@ abbrev TargetRefOracle := ByteArray → Ref
 abbrev RouteMap := Vat → Ref → Option Vat
 
 /-- Runtime state augmented with refs/routing for the per-(sender, ref)
-FIFO claim. -/
+FIFO claim, plus promise/forwarding state for the ref-FIFO-e2e claim
+across forwarding. -/
 @[ext]
 structure RuntimeState where
-  channels  : Vat → Vat → ChannelQueue := fun _ _ => default
-  routesTo  : RouteMap                  := fun _ _ => none
-  targetRef : TargetRefOracle           := fun _ => 0
+  channels    : Vat → Vat → ChannelQueue := fun _ _ => default
+  routesTo    : RouteMap                  := fun _ _ => none
+  targetRef   : TargetRefOracle           := fun _ => 0
+  /-- Marks a ref as a promise. -/
+  isPromise   : Ref → Bool                := fun _ => false
+  /-- Promise resolution: `resolvedTo r = some v` means promise `r`
+  resolved to a value hosted at vat `v`. -/
+  resolvedTo  : Ref → Option Vat          := fun _ => none
+  /-- Forwarding ledger: `forwardedAt b c m = some k` means `b`
+  forwarded `m` onto `b→c` wire at index `k`. -/
+  forwardedAt : Vat → Vat → ByteArray → Option Nat := fun _ _ _ => none
 
 def initial : RuntimeState := {}
 
@@ -111,6 +120,14 @@ inductive Action
   /-- Handoff: gifter `g` introduces receiver `r` to ref `rf` at
   exporter `e`. -/
   | handoff (g r e : Vat) (rf : Ref)
+  /-- Mark a ref as a promise. -/
+  | declarePromise (p : Ref)
+  /-- Vat `b` learns promise `p` resolved to a value at vat `c`.
+  Sets resolvedTo + installs b's forwarding route routesTo[b, p] := c. -/
+  | resolvePromise (b c : Vat) (p : Ref)
+  /-- Vat `b` re-emits previously-delivered msg `msg` onto b→c wire.
+  Pushes onto sent (like send, but doesn't touch sentBy/origination). -/
+  | forward (b c : Vat) (msg : ByteArray)
 
 def Action.apply (s : RuntimeState) : Action → RuntimeState
   | .send src dst msg =>
@@ -133,6 +150,26 @@ def Action.apply (s : RuntimeState) : Action → RuntimeState
       match s.routesTo r rf with
       | some existing => if existing = e then s else s
       | none          => updateRoute s r rf (some e)
+  | .declarePromise p =>
+    { s with isPromise := fun r => if r = p then true else s.isPromise r }
+  | .resolvePromise b c p =>
+    if ¬ s.isPromise p then s
+    else if s.resolvedTo p ≠ none then s
+    else
+      -- Install both the promise resolution and the forwarder's route.
+      { s with
+        resolvedTo := fun r => if r = p then some c else s.resolvedTo r,
+        routesTo := fun v r => if v = b ∧ r = p then some c else s.routesTo v r }
+  | .forward b c msg =>
+    let q := s.channels b c
+    -- Pre: msg was already delivered at b from someone; we model the
+    -- "forwarded" tag explicitly. For now, push onto sent and mark forwarded.
+    if s.forwardedAt b c msg ≠ none then s
+    else
+      { (update s b c { q with sent := q.sent.push msg }) with
+        forwardedAt := fun b' c' m' =>
+          if b' = b ∧ c' = c ∧ m' = msg then some q.sent.size
+          else s.forwardedAt b' c' m' }
 
 def runActions (s : RuntimeState) (actions : List Action) : RuntimeState :=
   actions.foldl (fun s a => a.apply s) s
@@ -229,6 +266,20 @@ theorem Action.handoff_channels
     · split <;> rfl
     · rfl
 
+/-- `declarePromise` doesn't touch channel state. -/
+theorem Action.declarePromise_channels
+    (s : RuntimeState) (p : Ref) :
+    ((Action.declarePromise p).apply s).channels = s.channels := by rfl
+
+/-- `resolvePromise` doesn't touch channel state. -/
+theorem Action.resolvePromise_channels
+    (s : RuntimeState) (b c : Vat) (p : Ref) :
+    ((Action.resolvePromise b c p).apply s).channels = s.channels := by
+  dsimp only [Action.apply]
+  split
+  · rfl
+  · split <;> rfl
+
 theorem InvSizeOrdered.setupRoute
     (s : RuntimeState) (v dst : Vat) (rf : Ref)
     (h : InvSizeOrdered s) :
@@ -247,14 +298,57 @@ theorem InvSizeOrdered.handoff
         congrFun (congrFun (Action.handoff_channels s g r e rf) S) D]
   exact h S D
 
+/-- `declarePromise` and `resolvePromise` don't touch channels — use
+the channel-preservation lemmas above. -/
+theorem InvSizeOrdered.declarePromise
+    (s : RuntimeState) (p : Ref) (h : InvSizeOrdered s) :
+    InvSizeOrdered ((Action.declarePromise p).apply s) := by
+  intro S D
+  rw [show ((Action.declarePromise p).apply s).channels S D = s.channels S D from
+        congrFun (congrFun (Action.declarePromise_channels s p) S) D]
+  exact h S D
+
+theorem InvSizeOrdered.resolvePromise
+    (s : RuntimeState) (b c : Vat) (p : Ref) (h : InvSizeOrdered s) :
+    InvSizeOrdered ((Action.resolvePromise b c p).apply s) := by
+  intro S D
+  rw [show ((Action.resolvePromise b c p).apply s).channels S D = s.channels S D from
+        congrFun (congrFun (Action.resolvePromise_channels s b c p) S) D]
+  exact h S D
+
+/-- `forward` does touch channels — pushes onto sent on b→c (when not
+already forwarded), same shape as send. -/
+theorem InvSizeOrdered.forward
+    (s : RuntimeState) (b c : Vat) (msg : ByteArray) (h : InvSizeOrdered s) :
+    InvSizeOrdered ((Action.forward b c msg).apply s) := by
+  intro S D
+  dsimp only [Action.apply]
+  by_cases hfwd : s.forwardedAt b c msg ≠ none
+  · simp [hfwd]; exact h S D
+  · simp [hfwd]
+    -- Updates (b, c) channel: sent grows by 1, received unchanged.
+    by_cases heq : S = b ∧ D = c
+    · obtain ⟨rfl, rfl⟩ := heq
+      show ((update s S D _).channels S D).received.size ≤ _
+      rw [update_eq]
+      have hsz := h S D
+      simp [Array.size_push]; omega
+    · show ((update s b c _).channels S D).received.size ≤
+            ((update s b c _).channels S D).sent.size
+      rw [update_ne _ b c _ S D heq]
+      exact h S D
+
 theorem InvSizeOrdered.action_preserves
     (s : RuntimeState) (a : Action) (h : InvSizeOrdered s) :
     InvSizeOrdered (a.apply s) := by
   cases a with
-  | send src dst msg     => exact InvSizeOrdered.send s src dst msg h
-  | recv src dst         => exact InvSizeOrdered.recv s src dst h
-  | setupRoute v dst rf  => exact InvSizeOrdered.setupRoute s v dst rf h
-  | handoff g r e rf     => exact InvSizeOrdered.handoff s g r e rf h
+  | send src dst msg       => exact InvSizeOrdered.send s src dst msg h
+  | recv src dst           => exact InvSizeOrdered.recv s src dst h
+  | setupRoute v dst rf    => exact InvSizeOrdered.setupRoute s v dst rf h
+  | handoff g r e rf       => exact InvSizeOrdered.handoff s g r e rf h
+  | declarePromise p       => exact InvSizeOrdered.declarePromise s p h
+  | resolvePromise b c p   => exact InvSizeOrdered.resolvePromise s b c p h
+  | forward b c msg        => exact InvSizeOrdered.forward s b c msg h
 
 theorem InvSizeOrdered.runActions_preserves
     (s : RuntimeState) (h : InvSizeOrdered s) (actions : List Action) :
@@ -356,14 +450,63 @@ theorem InvDeliverIsPrefix.handoff
   rw [hch]
   exact h S D
 
+/-- `declarePromise` / `resolvePromise` don't touch channels. -/
+theorem InvDeliverIsPrefix.declarePromise
+    (s : RuntimeState) (p : Ref) (h : InvDeliverIsPrefix s) :
+    InvDeliverIsPrefix ((Action.declarePromise p).apply s) := by
+  intro S D
+  have hch : ((Action.declarePromise p).apply s).channels S D = s.channels S D :=
+    congrFun (congrFun (Action.declarePromise_channels s p) S) D
+  rw [hch]
+  exact h S D
+
+theorem InvDeliverIsPrefix.resolvePromise
+    (s : RuntimeState) (b c : Vat) (p : Ref) (h : InvDeliverIsPrefix s) :
+    InvDeliverIsPrefix ((Action.resolvePromise b c p).apply s) := by
+  intro S D
+  have hch : ((Action.resolvePromise b c p).apply s).channels S D = s.channels S D :=
+    congrFun (congrFun (Action.resolvePromise_channels s b c p) S) D
+  rw [hch]
+  exact h S D
+
+/-- `forward` preserves the prefix invariant — its effect on channels
+matches `send`'s (push onto `sent`, leave `received` unchanged). -/
+theorem InvDeliverIsPrefix.forward
+    (s : RuntimeState) (b c : Vat) (msg : ByteArray)
+    (h : InvDeliverIsPrefix s) :
+    InvDeliverIsPrefix ((Action.forward b c msg).apply s) := by
+  intro S D
+  dsimp only [Action.apply]
+  by_cases hfwd : s.forwardedAt b c msg ≠ none
+  · simp [hfwd]; exact h S D
+  · simp [hfwd]
+    by_cases heq : S = b ∧ D = c
+    · obtain ⟨rfl, rfl⟩ := heq
+      show ((update s S D _).channels S D).received.size ≤ _ ∧ _
+      rw [update_eq]
+      have ⟨hsz, helt⟩ := h S D
+      refine ⟨?_, ?_⟩
+      · simp [Array.size_push]; omega
+      · intro j hj
+        have hjs : j < (s.channels S D).sent.size := Nat.lt_of_lt_of_le hj hsz
+        show (s.channels S D).received[j]? = ((s.channels S D).sent.push msg)[j]?
+        rw [Array.getElem?_push_lt hjs]
+        rw [helt j hj, Array.getElem?_eq_getElem hjs]
+    · show ((update s b c _).channels S D).received.size ≤ _ ∧ _
+      rw [update_ne _ b c _ S D heq]
+      exact h S D
+
 theorem InvDeliverIsPrefix.action_preserves
     (s : RuntimeState) (a : Action) (h : InvDeliverIsPrefix s) :
     InvDeliverIsPrefix (a.apply s) := by
   cases a with
-  | send src dst msg     => exact InvDeliverIsPrefix.send s src dst msg h
-  | recv src dst         => exact InvDeliverIsPrefix.recv s src dst h
-  | setupRoute v dst rf  => exact InvDeliverIsPrefix.setupRoute s v dst rf h
-  | handoff g r e rf     => exact InvDeliverIsPrefix.handoff s g r e rf h
+  | send src dst msg       => exact InvDeliverIsPrefix.send s src dst msg h
+  | recv src dst           => exact InvDeliverIsPrefix.recv s src dst h
+  | setupRoute v dst rf    => exact InvDeliverIsPrefix.setupRoute s v dst rf h
+  | handoff g r e rf       => exact InvDeliverIsPrefix.handoff s g r e rf h
+  | declarePromise p       => exact InvDeliverIsPrefix.declarePromise s p h
+  | resolvePromise b c p   => exact InvDeliverIsPrefix.resolvePromise s b c p h
+  | forward b c msg        => exact InvDeliverIsPrefix.forward s b c msg h
 
 theorem InvDeliverIsPrefix.runActions_preserves
     (s : RuntimeState) (h : InvDeliverIsPrefix s) (actions : List Action) :
