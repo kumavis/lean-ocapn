@@ -65,19 +65,27 @@ sequence within each peer (each peer's history is a linear sequence
 of sends and recvs; the global trace is one possible interleaving). -/
 abbrev Trace := List Event
 
+/-- Per-event extractor: yields the msg if this event is a `sent` from
+`src` to `dst`, else `none`. Used by `Trace.sentOn`. -/
+def Event.asSentOn (src dst : Vat) : Event → Option ByteArray
+  | .sent s d msg     => if s = src ∧ d = dst then some msg else none
+  | .received _ _ _   => none
+
+/-- Per-event extractor: yields the msg if this event is a `received` from
+`src` to `dst`, else `none`. Used by `Trace.receivedOn`. -/
+def Event.asReceivedOn (src dst : Vat) : Event → Option ByteArray
+  | .sent _ _ _           => none
+  | .received s d msg     => if s = src ∧ d = dst then some msg else none
+
 /-- The send-history of a particular `(src, dst)` channel as
 extracted from a trace. -/
 def Trace.sentOn (t : Trace) (src dst : Vat) : List ByteArray :=
-  t.filterMap fun
-    | .sent s d msg     => if s = src ∧ d = dst then some msg else none
-    | .received _ _ _   => none
+  t.filterMap (Event.asSentOn src dst)
 
 /-- The receive-history of a particular `(src, dst)` channel as
 extracted from a trace. -/
 def Trace.receivedOn (t : Trace) (src dst : Vat) : List ByteArray :=
-  t.filterMap fun
-    | .sent _ _ _           => none
-    | .received s d msg     => if s = src ∧ d = dst then some msg else none
+  t.filterMap (Event.asReceivedOn src dst)
 
 /-- The Netlayer contract on a trace. Per-channel FIFO + no loss
 (modulo "eventually" — formulated here as "receive history is a
@@ -91,7 +99,7 @@ structure Valid (t : Trace) : Prop where
   point, the received prefix may be shorter than the sent sequence
   (msgs in flight), but it never reorders or skips. -/
   receivedIsPrefix :
-    ∀ src dst, (t.receivedOn src dst).isPrefixOf (t.sentOn src dst)
+    ∀ src dst, (t.receivedOn src dst) <+: (t.sentOn src dst)
 
 /-- The empty trace is trivially valid. -/
 theorem Valid.empty : Valid [] := by

@@ -117,7 +117,7 @@ theorem networkState_get_set_eq
     (ns.set (src, dst) q).get (src, dst) = q := by
   unfold OcapnLean.Netlayer.InProcess.NetworkState.set
          OcapnLean.Netlayer.InProcess.NetworkState.get
-  simp [List.find?_cons]
+  simp
 
 /-- Lookup at a different key is unchanged after a `set`. -/
 theorem networkState_get_set_ne
@@ -399,5 +399,373 @@ theorem network_state_reachable_via_ops_satisfies_prefix
     rw [← projectNetworkState_empty]
     exact (project_runNetworkOps default ops).symm
   exact OcapnLean.Captp.RuntimeFifo.InvDeliverIsPrefix.reachable _ hreach
+
+/-! ## Gap D: per-channel `<+: ` claim (List.IsPrefix on arrays' toList)
+
+From `InvDeliverIsPrefix` (size bound + indexed equality on Array
+`sent` / `received`), derive that `received.toList` is a prefix of
+`sent.toList` (in the `List.IsPrefix` sense, i.e., `<+:`). This is
+the bridge from index-based reasoning to list-based prefix reasoning,
+which the `Netlayer.Spec.Valid` contract uses via `List.isPrefixOf`.
+-/
+
+/-- Pure-Lean lemma: given arrays where `received.size ≤ sent.size`
+and per-index equality holds, `received.toList` is a prefix of
+`sent.toList`. -/
+theorem array_received_prefix_of_sent
+    (received sent : Array ByteArray)
+    (hsz : received.size ≤ sent.size)
+    (helt : ∀ j, j < received.size → received[j]? = sent[j]?) :
+    received.toList <+: sent.toList := by
+  rw [List.prefix_iff_eq_take]
+  apply List.ext_getElem?
+  intro i
+  by_cases hi : i < received.size
+  · -- i < received.size: both sides reduce to sent[i]?
+    have hi' : i < received.toList.length := by
+      simpa [Array.length_toList] using hi
+    rw [List.getElem?_take_of_lt hi']
+    simp only [Array.getElem?_toList]
+    exact helt i hi
+  · -- i ≥ received.size: both sides are none
+    have hge : received.size ≤ i := Nat.le_of_not_lt hi
+    have hlhs : received.toList[i]? = none := by
+      simp only [Array.getElem?_toList]
+      exact Array.getElem?_eq_none hge
+    have hrhs : (sent.toList.take received.toList.length)[i]? = none := by
+      apply List.getElem?_eq_none
+      rw [List.length_take]
+      simp [Array.length_toList]
+      omega
+    rw [hlhs, hrhs]
+
+/-- **Per-channel snapshot prefix** (the substance of Gap D). At any
+state reachable via `runNetworkOps` from the empty initial state, on
+every channel `(src, dst)`, the `received` array's `toList` is a
+prefix of the `sent` array's `toList`. -/
+theorem network_snapshot_per_channel_prefix
+    (ops : List NetworkOp)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    ((runNetworkOps default ops).get (src, dst)).received.toList <+:
+    ((runNetworkOps default ops).get (src, dst)).sent.toList := by
+  have hinv := network_state_reachable_via_ops_satisfies_prefix ops
+  have ⟨hsz, helt⟩ := hinv src dst
+  -- (projectNetworkState ns).channels src dst = projectChannelQueue (ns.get (src, dst))
+  -- projectChannelQueue preserves .sent and .received.
+  exact array_received_prefix_of_sent _ _ hsz helt
+
+/-! ## Pure-state mirror of `Network.snapshot`
+
+`Network.snapshot` reads the IO.Ref and emits sent events first
+(across all channels in channel-list order), then received events.
+Here's the pure-state version operating directly on `NetworkState`. -/
+
+/-- The pure analogue of `Network.snapshot` — emit all sent events
+first, then all received events. Within a channel, order is preserved
+(array order). -/
+def NetworkState.toTrace
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState) :
+    OcapnLean.Netlayer.Spec.Trace :=
+  let sentEvts :=
+    ns.channels.flatMap (fun (kv : OcapnLean.Netlayer.InProcess.ChanKey ×
+                                  OcapnLean.Netlayer.InProcess.ChannelQueue) =>
+      kv.2.sent.toList.map (OcapnLean.Netlayer.Spec.Event.sent kv.1.1 kv.1.2))
+  let recvEvts :=
+    ns.channels.flatMap (fun (kv : OcapnLean.Netlayer.InProcess.ChanKey ×
+                                  OcapnLean.Netlayer.InProcess.ChannelQueue) =>
+      kv.2.received.toList.map (OcapnLean.Netlayer.Spec.Event.received kv.1.1 kv.1.2))
+  sentEvts ++ recvEvts
+
+/-! ## Well-formedness: channel-list keys are pairwise distinct
+
+`NetworkState.set` filters the existing list to remove the target key
+before prepending the new entry, so the channel list never has two
+entries with the same key. The default state has an empty list,
+trivially well-formed. -/
+
+/-- A `NetworkState` is well-formed if its `channels` list has
+pairwise-distinct keys. Preserved by `set`; vacuously true at `default`. -/
+def NetworkState.WF (ns : OcapnLean.Netlayer.InProcess.NetworkState) : Prop :=
+  ns.channels.Pairwise (fun a b => a.1 ≠ b.1)
+
+theorem NetworkState.default_wf :
+    NetworkState.WF (default : OcapnLean.Netlayer.InProcess.NetworkState) := by
+  show List.Pairwise _ ([] : List _)
+  exact List.Pairwise.nil
+
+theorem NetworkState.set_preserves_wf
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (k : OcapnLean.Netlayer.InProcess.ChanKey)
+    (q : OcapnLean.Netlayer.InProcess.ChannelQueue)
+    (h : NetworkState.WF ns) :
+    NetworkState.WF (ns.set k q) := by
+  unfold NetworkState.WF OcapnLean.Netlayer.InProcess.NetworkState.set
+  apply List.Pairwise.cons
+  · intro a ha
+    rw [List.mem_filter] at ha
+    -- ha.2 : decide (a.1 ≠ k) = true  → a.1 ≠ k
+    have ha2 : a.1 ≠ k := by simpa using ha.2
+    -- goal: k ≠ a.1
+    exact (Ne.symm ha2)
+  · exact List.Pairwise.filter _ h
+
+theorem NetworkState.sendOnState_preserves_wf
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) (msg : ByteArray)
+    (h : NetworkState.WF ns) :
+    NetworkState.WF (sendOnState ns src dst msg) :=
+  NetworkState.set_preserves_wf _ _ _ h
+
+theorem NetworkState.recvOnState_preserves_wf
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (src dst : OcapnLean.Netlayer.Spec.Vat)
+    (h : NetworkState.WF ns) :
+    NetworkState.WF (recvOnState ns src dst) := by
+  unfold recvOnState
+  by_cases hbusy : (ns.get (src, dst)).received.size < (ns.get (src, dst)).sent.size
+  · simp [hbusy]
+    exact NetworkState.set_preserves_wf _ _ _ h
+  · simp [hbusy]
+    exact h
+
+theorem NetworkState.runNetworkOps_preserves_wf
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (h : NetworkState.WF ns) (ops : List NetworkOp) :
+    NetworkState.WF (runNetworkOps ns ops) := by
+  induction ops generalizing ns with
+  | nil => exact h
+  | cons op rest ih =>
+    show NetworkState.WF (runNetworkOps (op.apply ns) rest)
+    apply ih
+    cases op with
+    | send src dst msg =>
+      exact NetworkState.sendOnState_preserves_wf _ _ _ _ h
+    | recv src dst =>
+      exact NetworkState.recvOnState_preserves_wf _ _ _ h
+
+theorem NetworkState.runNetworkOps_default_wf (ops : List NetworkOp) :
+    NetworkState.WF (runNetworkOps default ops) :=
+  NetworkState.runNetworkOps_preserves_wf _ NetworkState.default_wf ops
+
+/-! ## Trace extraction: `sentOn` / `receivedOn` of `toTrace`
+
+Given `WF ns`, the trace's `sentOn` and `receivedOn` filters extract
+exactly the matching channel's `sent` / `received` array as a list.
+Proof: each channel entry contributes either its full sent/received
+list (if its key matches) or nothing; `WF` rules out two matching
+entries, so the flatMap concatenation reduces to exactly one entry's
+contribution (or `[]` when no key matches, in which case `ns.get`
+returns the default empty queue). -/
+
+/-- Filter a map of `Event.sent` over a list of msgs: keeps everything if
+the (s, d) pair matches the filter, else nothing. -/
+private theorem filterMap_sentOn_eventSent
+    (xs : List ByteArray) (a b src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (xs.map (OcapnLean.Netlayer.Spec.Event.sent a b)).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asSentOn src dst)
+    = if a = src ∧ b = dst then xs else [] := by
+  rw [List.filterMap_map]
+  have h_comp : OcapnLean.Netlayer.Spec.Event.asSentOn src dst ∘
+                OcapnLean.Netlayer.Spec.Event.sent a b
+              = fun msg => if a = src ∧ b = dst then some msg else none := by
+    funext msg
+    simp [Function.comp, OcapnLean.Netlayer.Spec.Event.asSentOn]
+  rw [h_comp]
+  by_cases h : a = src ∧ b = dst <;> simp [h]
+
+/-- A map of `Event.received` events contributes nothing to a `sentOn` filter. -/
+private theorem filterMap_sentOn_eventReceived
+    (xs : List ByteArray) (a b src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (xs.map (OcapnLean.Netlayer.Spec.Event.received a b)).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asSentOn src dst)
+    = [] := by
+  rw [List.filterMap_map]
+  have h_comp : OcapnLean.Netlayer.Spec.Event.asSentOn src dst ∘
+                OcapnLean.Netlayer.Spec.Event.received a b
+              = fun _ => none := by
+    funext msg
+    simp [Function.comp, OcapnLean.Netlayer.Spec.Event.asSentOn]
+  rw [h_comp]
+  simp
+
+/-- A map of `Event.received` events filters correctly for `receivedOn`. -/
+private theorem filterMap_receivedOn_eventReceived
+    (xs : List ByteArray) (a b src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (xs.map (OcapnLean.Netlayer.Spec.Event.received a b)).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asReceivedOn src dst)
+    = if a = src ∧ b = dst then xs else [] := by
+  rw [List.filterMap_map]
+  have h_comp : OcapnLean.Netlayer.Spec.Event.asReceivedOn src dst ∘
+                OcapnLean.Netlayer.Spec.Event.received a b
+              = fun msg => if a = src ∧ b = dst then some msg else none := by
+    funext msg
+    simp [Function.comp, OcapnLean.Netlayer.Spec.Event.asReceivedOn]
+  rw [h_comp]
+  by_cases h : a = src ∧ b = dst <;> simp [h]
+
+/-- A map of `Event.sent` events contributes nothing to a `receivedOn` filter. -/
+private theorem filterMap_receivedOn_eventSent
+    (xs : List ByteArray) (a b src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (xs.map (OcapnLean.Netlayer.Spec.Event.sent a b)).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asReceivedOn src dst)
+    = [] := by
+  rw [List.filterMap_map]
+  have h_comp : OcapnLean.Netlayer.Spec.Event.asReceivedOn src dst ∘
+                OcapnLean.Netlayer.Spec.Event.sent a b
+              = fun _ => none := by
+    funext msg
+    simp [Function.comp, OcapnLean.Netlayer.Spec.Event.asReceivedOn]
+  rw [h_comp]
+  simp
+
+/-- Under WF, `sentOn` of the flatMap of sent-events extracts the matching
+channel's `sent.toList`. -/
+private theorem flatMap_sentEvts_sentOn
+    (l : List (OcapnLean.Netlayer.InProcess.ChanKey ×
+               OcapnLean.Netlayer.InProcess.ChannelQueue))
+    (hpw : l.Pairwise (fun a b => a.1 ≠ b.1))
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (l.flatMap (fun kv => kv.2.sent.toList.map
+        (OcapnLean.Netlayer.Spec.Event.sent kv.1.1 kv.1.2))).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asSentOn src dst)
+    = (match l.find? (·.1 = (src, dst)) with
+       | some kv => kv.2.sent.toList
+       | none    => []) := by
+  induction l with
+  | nil => simp
+  | cons head tail ih =>
+    obtain ⟨head_dist, tail_pw⟩ := List.pairwise_cons.mp hpw
+    have ihtail := ih tail_pw
+    simp only [List.flatMap_cons, List.filterMap_append]
+    rw [filterMap_sentOn_eventSent]
+    rw [ihtail]
+    by_cases hk : head.1 = (src, dst)
+    · simp [hk]
+      have hfind : tail.find? (·.1 = (src, dst)) = none := by
+        apply List.find?_eq_none.mpr
+        intro b hb hbeq
+        have hne : head.1 ≠ b.1 := head_dist b hb
+        apply hne
+        have hb_eq : b.1 = (src, dst) := by simpa using hbeq
+        rw [hk, hb_eq]
+      rw [hfind]
+    · have hknot : ¬ (head.1.1 = src ∧ head.1.2 = dst) := by
+        intro ⟨h1, h2⟩
+        exact hk (Prod.ext h1 h2)
+      simp [hknot, hk]
+
+/-- Symmetric form for `receivedOn`. -/
+private theorem flatMap_recvEvts_receivedOn
+    (l : List (OcapnLean.Netlayer.InProcess.ChanKey ×
+               OcapnLean.Netlayer.InProcess.ChannelQueue))
+    (hpw : l.Pairwise (fun a b => a.1 ≠ b.1))
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (l.flatMap (fun kv => kv.2.received.toList.map
+        (OcapnLean.Netlayer.Spec.Event.received kv.1.1 kv.1.2))).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asReceivedOn src dst)
+    = (match l.find? (·.1 = (src, dst)) with
+       | some kv => kv.2.received.toList
+       | none    => []) := by
+  induction l with
+  | nil => simp
+  | cons head tail ih =>
+    obtain ⟨head_dist, tail_pw⟩ := List.pairwise_cons.mp hpw
+    have ihtail := ih tail_pw
+    simp only [List.flatMap_cons, List.filterMap_append]
+    rw [filterMap_receivedOn_eventReceived]
+    rw [ihtail]
+    by_cases hk : head.1 = (src, dst)
+    · simp [hk]
+      have hfind : tail.find? (·.1 = (src, dst)) = none := by
+        apply List.find?_eq_none.mpr
+        intro b hb hbeq
+        have hne : head.1 ≠ b.1 := head_dist b hb
+        apply hne
+        have hb_eq : b.1 = (src, dst) := by simpa using hbeq
+        rw [hk, hb_eq]
+      rw [hfind]
+    · have hknot : ¬ (head.1.1 = src ∧ head.1.2 = dst) := by
+        intro ⟨h1, h2⟩
+        exact hk (Prod.ext h1 h2)
+      simp [hknot, hk]
+
+/-- Helper: the flatMap of received-events under a `sentOn` filter reduces to []. -/
+private theorem flatMap_recvEvts_sentOn_eq_nil
+    (l : List (OcapnLean.Netlayer.InProcess.ChanKey ×
+               OcapnLean.Netlayer.InProcess.ChannelQueue))
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (l.flatMap (fun kv => kv.2.received.toList.map
+        (OcapnLean.Netlayer.Spec.Event.received kv.1.1 kv.1.2))).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asSentOn src dst)
+    = [] := by
+  induction l with
+  | nil => simp
+  | cons head tail ih =>
+    simp only [List.flatMap_cons, List.filterMap_append, ih,
+               filterMap_sentOn_eventReceived, List.append_nil]
+
+/-- Helper: the flatMap of sent-events under a `receivedOn` filter reduces to []. -/
+private theorem flatMap_sentEvts_receivedOn_eq_nil
+    (l : List (OcapnLean.Netlayer.InProcess.ChanKey ×
+               OcapnLean.Netlayer.InProcess.ChannelQueue))
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (l.flatMap (fun kv => kv.2.sent.toList.map
+        (OcapnLean.Netlayer.Spec.Event.sent kv.1.1 kv.1.2))).filterMap
+      (OcapnLean.Netlayer.Spec.Event.asReceivedOn src dst)
+    = [] := by
+  induction l with
+  | nil => simp
+  | cons head tail ih =>
+    simp only [List.flatMap_cons, List.filterMap_append, ih,
+               filterMap_receivedOn_eventSent, List.append_nil]
+
+/-- The `sentOn` projection of `toTrace` reduces to the channel queue's
+`sent.toList`. -/
+theorem toTrace_sentOn_of_wf
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (h : NetworkState.WF ns)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (NetworkState.toTrace ns).sentOn src dst = (ns.get (src, dst)).sent.toList := by
+  unfold NetworkState.toTrace OcapnLean.Netlayer.Spec.Trace.sentOn
+  rw [List.filterMap_append]
+  rw [flatMap_recvEvts_sentOn_eq_nil, List.append_nil]
+  rw [flatMap_sentEvts_sentOn _ h src dst]
+  unfold OcapnLean.Netlayer.InProcess.NetworkState.get
+  cases hf : ns.channels.find? (·.1 = (src, dst)) with
+  | none => rfl
+  | some kv => rfl
+
+/-- The `receivedOn` projection of `toTrace` reduces to the channel queue's
+`received.toList`. -/
+theorem toTrace_receivedOn_of_wf
+    (ns : OcapnLean.Netlayer.InProcess.NetworkState)
+    (h : NetworkState.WF ns)
+    (src dst : OcapnLean.Netlayer.Spec.Vat) :
+    (NetworkState.toTrace ns).receivedOn src dst = (ns.get (src, dst)).received.toList := by
+  unfold NetworkState.toTrace OcapnLean.Netlayer.Spec.Trace.receivedOn
+  rw [List.filterMap_append]
+  rw [flatMap_sentEvts_receivedOn_eq_nil, List.nil_append]
+  rw [flatMap_recvEvts_receivedOn _ h src dst]
+  unfold OcapnLean.Netlayer.InProcess.NetworkState.get
+  cases hf : ns.channels.find? (·.1 = (src, dst)) with
+  | none => rfl
+  | some kv => rfl
+
+/-! ## Headline: snapshot of a reachable in-process network is `Spec.Valid` -/
+
+/-- **The full Gap D claim.** Any in-process `NetworkState` reachable
+from the empty initial state via a sequence of `NetworkOp`s produces a
+`toTrace` that satisfies the abstract netlayer contract `Spec.Valid` —
+per-channel FIFO + no-loss + no-spontaneous, all wrapped in the
+`received <+: sent` prefix relation per channel. -/
+theorem network_snapshot_valid (ops : List NetworkOp) :
+    OcapnLean.Netlayer.Spec.Valid
+      (NetworkState.toTrace (runNetworkOps default ops)) := by
+  refine ⟨?_⟩
+  intro src dst
+  have hwf := NetworkState.runNetworkOps_default_wf ops
+  rw [toTrace_sentOn_of_wf _ hwf src dst]
+  rw [toTrace_receivedOn_of_wf _ hwf src dst]
+  exact network_snapshot_per_channel_prefix ops src dst
 
 end OcapnLean.Captp.RuntimeFifoBridge

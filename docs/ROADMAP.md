@@ -666,7 +666,56 @@ weeks) borrow the pattern from `RefinementExtended.lean`; runtime test
 - Phase A.7 (below) is what would actually connect the runtime to the
   parallel model.
 
-### M11 Phase A.7 — Wire runtime to MultiVat _(planned, not opened)_
+### M11 Phase A.7 — Wire runtime to MultiVat _(in progress: A.7-α/β/γ landed)_
+
+**Status (2026-05):** the first half of A.7 has landed under a
+**netlayer-axiomatic** framing rather than a runtime-trace refinement:
+
+- [x] `OcapnLean/Netlayer/Spec.lean` — abstract netlayer contract
+      (`Spec.Valid`: per-channel `received <+: sent` prefix relation).
+- [x] `OcapnLean/Netlayer/Observable.lean` —
+      `ObservableNetlayer` revealing the snapshot trace.
+- [x] `OcapnLean/Netlayer/InProcess.lean` — concrete in-process Network
+      (per-channel `(sent, received)` arrays, `IO.Ref`-protected
+      atomic updates).
+- [x] `OcapnLean/Captp/RuntimeFifo.lean` — pure-Lean runtime LTS with
+      7 actions (send / recv / setupRoute / handoff / declarePromise /
+      resolvePromise / forward); `InvDeliverIsPrefix.reachable` gives
+      the per-channel prefix invariant over any reachable state.
+- [x] `OcapnLean/Captp/RuntimeFifoBridge.lean` — bridge between the
+      concrete `Network` and the LTS:
+      - **Per-op correspondence** (4 lemmas, structure-level) — every
+        `sendOnState` / `recvOnState` matches an `Action.send` /
+        `Action.recv` step on the projection.
+      - **Trace-level lifting** (`project_runNetworkOps`) — running a
+        sequence of network ops then projecting equals projecting then
+        running the corresponding LTS trace.
+      - **`network_state_reachable_via_ops_satisfies_prefix`** —
+        any in-process state reachable from `default` satisfies the
+        per-channel prefix invariant on the projection.
+      - **`array_received_prefix_of_sent`** — bridge from
+        index-equality prefix invariants to `List.IsPrefix` (`<+:`).
+      - **`network_snapshot_per_channel_prefix`** — direct claim:
+        on every channel, `received.toList <+: sent.toList`.
+      - **`NetworkState.toTrace`** + **WF invariant** + **`network_snapshot_valid`** —
+        the snapshot of any reachable in-process Network satisfies
+        `Spec.Valid` (full headline).
+
+**What's not yet done:** a *runtime-trace* refinement (one step of
+`Captp.Session.run` ↔ one LTS action). The current bridge is
+axiomatic: it ties the in-process Network to the LTS and proves
+`Spec.Valid` on its snapshot, but `Captp.Session.run`'s event loop
+isn't yet projected to the LTS step-by-step. That would be a second
+deliverable; for now the netlayer-axiomatic framing gives us the
+end-to-end Spec.Valid claim for any deployment using the in-process
+netlayer.
+
+**Below: the two design choices originally documented for A.7.** The
+landed A.7-α/β/γ work is closest to **Approach 2** (netlayer is a
+projection target via its observable snapshot), but framed
+axiomatically: the netlayer is *trusted* to satisfy `Spec.Valid`, and
+the in-process netlayer *proves* it. Real TCP/UDS/WS netlayers
+inherit the contract from TCP / kernel.
 
 The gap Phase A.6 left open: `Captp.Session.run`,
 `Captp.Run.runHandler`, and the multi-process CapTP deployment have no

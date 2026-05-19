@@ -17,7 +17,7 @@ Last updated: 2026-05-19 (commit on `feat/captp-runtime-and-interop`).
 | **CapTP state machine** (Veil) | 10 named safety properties (P1–P8 + `ref_fifo` + `ref_fifo_e2e`) + 25+ supporting invariants, all preserved across all actions. Using Mark Miller's *Robust Composition* §19 vocabulary, `P1` now covers three layers: **fail-stop FIFO** (per (src, dst) channel, `Channels.lean`), **end-to-end reference FIFO at the routing target** (per (sender, ref) under immutable routing, `RefFifo.lean`), and **end-to-end reference FIFO across forwarding** (per (sender, ref) at the resolution host across the A→B→C chain, `RefFifoForwarding.lean`, M11 Phase A.5). | Z3 / cvc5 via Veil's SMT pipeline (`bv_decide` for the float64 atomic round-trip). |
 | **Refinement: Veil ↔ Lean impl (single-peer)** | `simulates : Impl.State → SpecState → Prop` plus initial / abort / exportNew / importNew lemmas. Lifting lemmas: `bootstrapAtZero_lifts`, `importedFunctional_lifts`, `exportedFunctional_lifts`, `crossedHellosUnique_lifts`, `gcSound_lifts`, `handoffNoReplay_lifts`, plus four vacuous lifts for the spec's promise / listener fields the impl doesn't yet track. | Hand-written Lean tactic scripts. |
 | **Refinement: Veil ↔ Lean *parallel model* (multi-vat, M11 Phase A.6)** | `simulatesChannels` / `simulatesRefFifo` / `simulatesRefFifoForwarding` relating the **pure-Lean parallel state machine** `Impl.MultiVat.State` to abstract Veil-side `ChannelsState` / `RefFifoState` / `RefFifoForwardingState`. Headline lifts: `e2e_fifo_lifts`, `ref_fifo_lifts`, `ref_fifo_e2e_lifts`. | Hand-written Lean tactic scripts. |
-| **Runtime LTS + full FIFO invariant (M11 Phase A.7, chunks 2–4)** | `OcapnLean/Captp/RuntimeFifo.lean` defines a pure-Lean LTS over per-channel `(sent, received)` arrays with four atomic actions (`send`, `recv`, `setupRoute`, `handoff`). `InvDeliverIsPrefix.reachable` proves: **every reachable runtime state has `received` as a true prefix of `sent` on every channel** — both size bound (`received.size ≤ sent.size`) and per-index payload equality (`received[j]? = sent[j]?`). `runtime_per_sender_per_ref_fifo` derives the per-(sender, ref) FIFO claim from per-channel FIFO + routing functionality. `OcapnLean/Captp/RuntimeFifoBridge.lean` projects the in-process `Network` state into the LTS state and proves the per-op correspondence at the modified channel (`project_sendOnState_at_modified_channel`, `project_recvOnState_at_modified_channel_busy`) — the bridge from the actual runtime to the LTS proofs. Arbitrary interleavings handled structurally. | Hand-written Lean (induction over action sequences + structural correspondence). |
+| **Runtime LTS + full FIFO invariant (M11 Phase A.7, chunks 2–4)** | `OcapnLean/Captp/RuntimeFifo.lean` defines a pure-Lean LTS over per-channel `(sent, received)` arrays with **seven** atomic actions (`send`, `recv`, `setupRoute`, `handoff`, `declarePromise`, `resolvePromise`, `forward`). `InvDeliverIsPrefix.reachable` proves: **every reachable runtime state has `received` as a true prefix of `sent` on every channel** — both size bound (`received.size ≤ sent.size`) and per-index payload equality (`received[j]? = sent[j]?`). `runtime_per_sender_per_ref_fifo` derives the per-(sender, ref) FIFO claim from per-channel FIFO + routing functionality. `OcapnLean/Captp/RuntimeFifoBridge.lean` projects the in-process `Network` state into the LTS state and proves: (i) **per-op correspondence** (`project_sendOnState`, `project_recvOnState` — full structure equality, not just per-channel); (ii) **trace-level lifting** (`project_runNetworkOps` — running a sequence of network ops then projecting equals projecting then running the corresponding LTS trace); (iii) **`network_state_reachable_via_ops_satisfies_prefix`** — any reachable Network projection satisfies the per-channel prefix invariant; (iv) **`array_received_prefix_of_sent`** — bridge from index-equality to `List.IsPrefix` (`<+:`); (v) **`network_snapshot_per_channel_prefix`** — direct per-channel prefix on the actual Network; (vi) **`network_snapshot_valid`** — *the full headline*: the snapshot trace of any reachable in-process Network satisfies the abstract `Netlayer.Spec.Valid` contract. Arbitrary interleavings handled structurally. | Hand-written Lean (induction over action sequences + structural correspondence + WF-preserving channel-list invariant). |
 | **Syrup codec** | Universal round-trip `decodeExt (encodeExt v) = some (v, [])` for **all** of `ValueExt` — atomic forms (bool, int, bytes, str, sym, float64) and arbitrarily nested containers (list, record, dict). Encoder injectivity (`encodeExt v₁ = encodeExt v₂ → v₁ = v₂`) follows as a corollary. Property-fuzz (`scripts/SyrupFuzz.lean`) provides a runtime sanity belt. | Lean (`decide` / `simp` / `bv_decide` / `ValueExt.rec` mutual induction). |
 | **Locators** | Round-trip `fromValueExt ∘ toValueExt = some` for `PeerLocator` and `SturdyRef`. URI round-trip with percent-encoded hint values. | Lean (`simp`, `native_decide`). |
 | **Cross-impl interop** | 24/24 against Python ref suite (this impl + @endo/ocapn). End-to-end TCP handshake against Ridley dobjects (with three opt-in flags for documented disagreements). End-to-end WebSocket handshake against Goblins v0.17 (legacy auth) and Goblins v0.18 (typed auth). | Runtime; gated in CI. |
@@ -152,24 +152,26 @@ CI does all of this on every push; see
 
 * **Runtime is partially refined (M11 Phase A.7 ongoing).** Phase A.6
   introduced `Impl.MultiVat` as a pure-Lean parallel state machine
-  and lifted Veil-proved FIFO properties onto it. Phase A.7 chunks
-  1–4 (landed) added: in-process `Netlayer` over real concurrent
-  send/recv (chunk 1); runtime LTS with `InvDeliverIsPrefix.reachable`
-  proving full per-channel prefix invariant — size bound + payload
-  match (chunks 2–3); refs/routing state with `runtime_per_sender_per_ref_fifo`
-  derived from per-channel FIFO + routing functionality (chunk 3);
-  the `Network` ↔ `RuntimeFifo` projection with per-op correspondence
-  theorems at the modified channel (chunk 4, in `RuntimeFifoBridge.lean`).
-  **Still pending**: cross-channel correspondence (mechanical
-  `List.find?`/`filter` lemmas; doesn't add substance); the trace-level
-  lifting (running a network op sequence then projecting equals
-  projecting then running corresponding LTS actions); runtime
-  ref-FIFO-e2e across forwarding (needs promise/forward state on
-  `RuntimeState`); a behavioural connection from `Captp.Session.run`
-  to the LTS (Session.run already calls Netlayer.sendMessage/recvMessage?;
-  when the netlayer is `Network.netlayerFor`, those go through
-  `Network.send`/`recv?`, which the per-op correspondence ties to LTS
-  steps — formalising the implication is the remaining lemma).
+  and lifted Veil-proved FIFO properties onto it. Phase A.7-α/β/γ
+  (landed) added: in-process `Netlayer` over real concurrent
+  send/recv; abstract `Netlayer.Spec.Valid` contract; runtime LTS
+  with seven actions (`send`, `recv`, `setupRoute`, `handoff`,
+  `declarePromise`, `resolvePromise`, `forward`) and
+  `InvDeliverIsPrefix.reachable` proving full per-channel prefix
+  invariant; the `Network` ↔ `RuntimeFifo` bridge with per-op
+  correspondence, trace-level lifting, and the headline
+  `network_snapshot_valid` (snapshot of any reachable in-process
+  Network satisfies `Spec.Valid`). **Still pending**: runtime
+  ref-FIFO-e2e (e.g. the full `ref_fifo_e2e` claim at runtime via
+  the forwarding actions; the forwarding actions exist on the LTS
+  but the headline lemma over `Reachable` still needs to be stated
+  and proven). A behavioural connection from `Captp.Session.run`
+  to the LTS step-by-step is still future work: Session.run calls
+  `Netlayer.sendMessage` / `recvMessage?`, which when backed by
+  `Network.netlayerFor` go through `Network.send` / `recv?`. The
+  per-op correspondence proven in Phase A.7-γ ties those to LTS
+  steps; making it a refinement theorem at the Session.run level
+  is the remaining work.
 * **`Captp.Impl` doesn't grow promises / forwarding at the runtime
   level.** Phase A.6's `Impl/PromiseForwarding.lean` is part of the
   parallel formalization (see above) — not new behavior in
