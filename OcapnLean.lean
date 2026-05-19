@@ -27,6 +27,9 @@ import OcapnLean.Captp.Client
 import OcapnLean.Netlayer
 import OcapnLean.Netlayer.Tcp
 import OcapnLean.Netlayer.Uds
+import OcapnLean.Netlayer.Spec
+import OcapnLean.Netlayer.Observable
+import OcapnLean.Netlayer.InProcess
 import OcapnLean.Server
 import OcapnLean.Syrup.Extended
 import OcapnLean.Syrup.RoundTripExt
