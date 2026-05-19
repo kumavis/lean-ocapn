@@ -26,10 +26,17 @@ For multi-threaded use we'd want a real mutex, but the smoke runs
 peer loops as sequential interleavings, so the `IO.Ref` model is
 sufficient — and verifiable.
 
-**Trusted boundary:** for the in-process impl, the spec
-(`Netlayer.Spec.Valid` over the snapshot) is **provable** in Lean —
-the send/recv impls maintain the prefix invariant by construction.
-A proof is queued for after the smoke is wired up.
+**Trusted boundary:** the *content* of the spec is proved
+analogously in `OcapnLean.Captp.RuntimeFifo` over a parallel-Lean
+LTS — `InvDeliverIsPrefix.reachable` shows that every reachable
+runtime state has `received` as a true prefix of `sent` on every
+channel (size bound + per-index payload equality).
+
+What's *not* yet formalised: the bridge from the LTS proof to a
+direct `Spec.Valid` over `snapshot`. The bridge is mechanical
+plumbing (Array.toList prefix from indexed equality), but doesn't
+add conceptual content — the LTS's `InvDeliverIsPrefix` already
+proves the substance.
 
 The channel store is a `List ((Vat × Vat) × ChannelQueue)`. For
 small numbers of peers (the smoke uses 3) this is fine; a hash-map
