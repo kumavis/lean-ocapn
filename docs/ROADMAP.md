@@ -297,56 +297,168 @@ proof against `Captp.Spec`.
       and known gaps. Pitched as a snapshot companion to
       `PLAN.md` (strategic) and `INTEROP.md` (interop matrix).
 
-## Proposed-spec extensions to track _(not on the milestone path yet)_
+## Milestone M11 — End-to-end reference FIFO, shortening, and `op:flush` _(2026-05-18 opened)_
 
-These are CapTP features that are **not in the current draft spec we
-implement** (`projects/ocapn-spec/draft-specifications/CapTP
-Specification.md`) but are under discussion in the OCapN
-pre-standardization group. Slated here so they aren't lost; we'll
-fold them into the relevant milestone once the spec language
-stabilises.
+**Goal.** Upgrade the FIFO guarantee from *fail-stop FIFO* (per-CapTP-session,
+what `Twoparty.lean`'s `e2e_fifo` proves today) to **end-to-end reference
+FIFO** in Mark Miller's sense (Robust Composition §19) — per-sender,
+per-logical-reference ordering that **survives promise shortening**.
 
-### Promise shortening
+The milestone is staged as three sub-phases (A → B → C) chosen so that the
+model built in **A** admits the mutation in **B** and the synchronization
+discipline in **C** as *additive extensions* rather than a rewrite. The
+expected dramatic arc: A proves the property, B breaks it via a counter-trace,
+C recovers it.
 
-When a promise `P1` resolves to another promise `P2`, the CapTP
-session can collapse the chain — subsequent messages targeting `P1`
-should be forwarded directly to `P2`'s eventual resolution rather
-than hopping through `P1` first. This is the "promise shortening"
-optimisation; conceptually closely related to E's "redirector"
-behaviour.
+Vocabulary used throughout this milestone follows Miller's two-stage lifecycle
+(send → delivery; no separate "process" stage). See
+[`projects/ocapn-message-ordering/notes/`](../projects/ocapn-message-ordering/notes/) (vendored from [kumavis/ocapn#1](https://github.com/kumavis/ocapn/pull/1))
+for the prose framing and the taxonomy of fail-stop FIFO vs end-to-end
+reference FIFO vs causal order (Miller explicitly rejects causal order;
+end-to-end reference FIFO is the right target).
 
-**For ocapn-lean:**
-- Extend `OcapnLean.Captp.Spec`'s promise table to model the
-  forwarding pointer, then prove monotonicity (a shortened
-  promise's settled value is invariant under further shortening).
-- This is a natural extension of PLAN.md **P2** (promise
-  monotonicity); the shortened-chain invariant is `chainResolved P V
-  → all-along-chain V` — should fall to the same SMT pipeline.
+### M11 Phase A — N-party reference-FIFO model with handoff _(landable result)_
 
-### `op:flush`
+Build a multi-vat channel model with references as first-class entities,
+and prove **end-to-end reference FIFO** under the *immutable-routing* regime
+(handoff adds new routing entries, never mutates existing ones).
 
-A proposed operation that asks a peer to acknowledge it has
-processed all preceding frames on the session before sending the
-flush-reply. Used by the test suite (and by GC-sensitive protocols)
-to gate on "all in-flight messages drained" without polling.
+**Design discipline for drop-in B/C:** `routesTo` must be modeled as a
+mutable relation from the start, even though Phase A's actions only add to
+it. Don't fold `routesTo_functional` into a stronger "immutable" invariant
+that B would need to weaken — keep functionality as a one-step constraint,
+not an inductive equality across states.
 
-**For ocapn-lean:**
-- New constructor in `OcapnLean.Captp.Messages.Op` once the wire
-  shape is settled.
-- Affects FIFO reasoning (**P1**): a flush-reply happens-after all
-  earlier sends, which strengthens the FIFO statement to
-  *delivery-completed-before* rather than just *delivered-before*.
-- Affects GC reasoning (**P4**): a flush gives the exporter a
-  durable "no in-flight references" witness, simplifying
-  collection liveness arguments.
+- [ ] **`OcapnLean/Captp/Channels.lean`** — rename + N-party generalization of
+      `Twoparty.lean`. The channel state (`sendCursor`, `recvCursor`,
+      `pending`, `delivered`, `sentAt`, `deliveredAt`) is already polymorphic
+      in `vat`; just remove the implicit two-party reading from the prose and
+      re-discharge `e2e_fifo` (still per-(src, dst) pair = **fail-stop FIFO**
+      in Miller's taxonomy).
+- [ ] **`OcapnLean/Captp/RefFifo.lean`** (new) — introduces references:
+      - `type ref` (global identity, uninterpreted)
+      - `function targetRef : msg → ref` (per-message immutable)
+      - `relation routesTo : vat → ref → vat → Prop` (V routes msgs to R
+        via V→W; **mutable** state, but Phase A only adds)
+      - `invariant [routesTo_functional]` (each (V, R) routes to at most one W)
+      - `relation sentBy : vat → msg → Prop` (origin tracking;
+        independent of channel src so it survives mutation in Phase C)
+- [ ] **`safety [ref_fifo]`** — per-sender, per-ref delivery order matches
+      send order:
+      ```
+      sentBy S M1 ∧ sentBy S M2 ∧
+      targetRef M1 = R ∧ targetRef M2 = R ∧
+      delivered M1 ∧ delivered M2 ∧ K1 < K2 → J1 < J2
+      ```
+      Discharged from `e2e_fifo` + `routesTo_functional` via the lemma
+      "same (sender, ref) ⇒ same channel (at least for delivered msgs) ⇒
+      channel FIFO applies."
+- [ ] **`action handoff (g r e : vat) (R : ref)`** — *additive only*:
+      requires `routesTo g R e`, adds `routesTo r R e`. Trivially preserves
+      `ref_fifo` (no existing routing entry mutates → no in-flight msg
+      changes channel mid-flight).
+- [ ] **`sat trace` witness** showing the happy 3-party handoff path:
+      Alice sends m₁ on R via Carol, hands R off to Bob, Bob sends m₂ on R
+      via Carol; Carol's delivery order matches Alice→Bob send order on R.
+- [ ] **Refresh `VERIFICATION.md`** with the new module's SMT count and the
+      Miller-vocabulary statement of the headline.
 
-### Tracking
+**Effort target:** ~1 week. The proof's inductive shape mirrors `Twoparty`'s
+`deliver_eq_send`-style invariants; the new piece is `routesTo_functional`
+and the per-ref bridging lemma.
 
-Watch `projects/ocapn-spec/draft-specifications/CapTP
-Specification.md` for additions or new draft documents
-(`promise-shortening.md`, `op-flush.md` are likely names). The
-monthly spec-drift watch (see "Continuous tracks" above) is where
-these would land first.
+### M11 Phase B — Promise shortening breaks `ref_fifo` _(counter-trace)_
+
+Add promise shortening as a *mutating* update to `routesTo`. Demonstrate
+formally (via `bmc_sat`) that without further synchronization, `ref_fifo`
+fails. This is the forcing function for Phase C — and a standalone
+contribution to the OCapN spec discussion (the failure mode in Veil rather
+than handwave-y prose).
+
+- [ ] **`OcapnLean/Captp/RefFifoShortening.lean`** (new module, imports
+      `RefFifo`):
+      - `relation isPromise : ref → Prop`
+      - `relation resolvedTo : ref → vat → Prop`
+      - `action shorten (V : vat) (P : ref)`:
+        - require `isPromise P ∧ resolvedTo P newOwner ∧
+          routesTo V P oldOwner`
+        - **mutate:** `routesTo V P := newOwner` (overwrite, not add)
+- [ ] **`sat trace { … } by bmc_sat`** demonstrating the Tribble race
+      ([`notes/issue-11-promise-shortening.md`](../projects/ocapn-message-ordering/notes/issue-11-promise-shortening.md)
+      § "Where ordering breaks"):
+      Alice sends m₁ on P via Bob (slow), Bob resolves P to Carol,
+      Alice `shorten`s P → Carol, Alice sends m₂ on P via Carol (fast);
+      m₂ delivered at Carol before m₁ traverses A→B→C.
+- [ ] **`#check_invariants`** with `[ref_fifo]` **fails** (as expected) —
+      capture the failed SMT output as a regression artifact (a `#guard_msgs`
+      that the failure mode is the Tribble case, not some other invariant
+      collapse).
+- [ ] **Document the protocol-level reading** in
+      `OcapnLean/Captp/RefFifoShortening.lean`'s docstring: which spec
+      semantics (`op:flush`, per-promise seq numbers, `delivered-after`) each
+      restore the property, and which one Phase C will mechanize.
+
+**Effort target:** ~3 days. The novel piece is using `bmc_sat` to *exhibit*
+the violation as a concrete witness (Veil already supports this — see
+`Gc.lean`'s `sat trace` examples).
+
+### M11 Phase C — `op:flush` precondition restores `ref_fifo`
+
+Strengthen `shorten`'s precondition to require the sender's old-channel
+queue for that ref to be drained. Re-discharge `ref_fifo`. The wire-level
+`op:flush` message is the *protocol mechanism* by which a vat observes the
+precondition holds — at the spec level, only the precondition matters, so the
+proof is decoupled from the wire shape.
+
+- [ ] **Strengthen `shorten` in `RefFifoShortening.lean`** (or fork to
+      `RefFifoShorteningFlushed.lean` if we want the Phase B counter-trace to
+      keep `#check_invariants` failing as a regression artifact):
+      ```
+      action shorten (V) (P) = {
+        require isPromise P ∧ resolvedTo P newOwner ∧ routesTo V P oldOwner
+        require ∀ M, sentBy V M ∧ targetRef M = P ∧ ¬ delivered M → False
+                                                           -- ↑ "flush"
+        routesTo V P := newOwner
+      }
+      ```
+      The new precondition is a **state predicate** — "no in-flight messages
+      from V targeting P on the old channel." This is exactly what
+      `op:flush` synchronizes the sender to observe on the wire.
+- [ ] **`safety [ref_fifo]` re-discharged** under the strengthened action.
+      The proof splits per-ref delivery into pre- and post-shortening eras;
+      each era is governed by per-channel FIFO from `e2e_fifo`, with the
+      flush precondition ensuring the eras don't interleave.
+- [ ] **`sat trace`** witness of the well-behaved path (Alice flushes, then
+      shortens, then sends m₂; Carol's delivery order matches send order).
+- [ ] **`sat trace`** witness that *removing the flush guard* re-introduces
+      the Tribble race — confirms the precondition is both necessary and
+      sufficient at the spec level (`bmc_sat` finds the counter-example
+      again).
+- [ ] **Wire-level note (no impl work in this milestone):** document in the
+      module's prose how `op:flush` (current proposal), per-promise sequence
+      numbers, or `delivered-after` each correspond to *different protocol
+      mechanisms* satisfying the same spec-level precondition. The
+      mechanization is wire-format-agnostic.
+
+**Effort target:** ~1 week. The era split adds 5–10 supporting invariants
+around the "before/after shortening" boundary; SMT discharge should be
+mechanical once those are stated correctly.
+
+### M11 cross-cutting concerns
+
+- **Not on the path:** wire-level implementation of `op:flush`,
+  refinement from the new spec modules to `Captp/Impl.lean`. These are
+  follow-up milestones (would need a multi-vat `Impl` runtime which doesn't
+  exist yet).
+- **Causal order:** explicitly **rejected** per Miller §19 ("E doesn't
+  provide CAUSAL order because we don't know how to enforce it among
+  mutually defensive machines"). End-to-end reference FIFO is the
+  intentional ceiling.
+- **Spec-drift dependency:** the OCapN spec doesn't yet mandate end-to-end
+  reference FIFO (only per-session FIFO, `Netlayers.md:32`). M11 is
+  *ahead* of the spec — the proof is intended as input to the
+  pre-standardization discussion, not a refinement of an existing
+  requirement.
 
 ## Continuous tracks (run alongside milestones)
 

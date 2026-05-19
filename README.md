@@ -81,11 +81,12 @@ ocapn-lean/
 │   └── diagnostics/                    upstream-issue drafts + minimal reproducers
 ├── docs/
 │   ├── PLAN.md                 proof plan + per-property scoreboard
-│   ├── ROADMAP.md              milestones M0–M10
+│   ├── ROADMAP.md              milestones M0–M11
 │   └── INTEROP.md              cross-impl test results + disagreements log
 ├── projects/                   submodules: ocapn-spec, ocapn-test-suite,
 │                               syrup-ocapn, goblins (codeberg), endo,
-│                               ridley-dobjects, veil
+│                               ridley-dobjects, veil,
+│                               ocapn-message-ordering (M11 research notes)
 ├── lakefile.toml
 └── lean-toolchain              pinned: leanprover/lean4:v4.24.0
 ```

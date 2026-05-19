@@ -26,3 +26,8 @@
 	path = projects/endo
 	url = https://github.com/endojs/endo
 	shallow = true
+[submodule "projects/ocapn-message-ordering"]
+	path = projects/ocapn-message-ordering
+	url = https://github.com/kumavis/ocapn.git
+	branch = claude/ocapn-message-ordering-WNRFV
+	shallow = true
