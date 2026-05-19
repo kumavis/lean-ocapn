@@ -593,15 +593,228 @@ theorem runtime_per_sender_per_ref_fifo
   ⟨runtime_received_matches_sent s hreach sender dst j1 hj1,
    runtime_received_matches_sent s hreach sender dst j2 hj2⟩
 
-/-! ## Runtime ref-FIFO across forwarding (Gap 2 follow-on; not yet proved)
+/-! ## Runtime ref-FIFO across forwarding (chunk 8)
 
-The Phase A.5 ref_fifo_e2e claim — per-(sender, ref) FIFO at the
-**resolution host** across an A→B→C forwarding chain — requires
-extending RuntimeState with promises (`isPromise`, `resolvedTo`,
-`forwardedAt`) and a `forward` action, plus the
-forward-preserves-send-order invariant. The shape mirrors what's
-already here; the size is significant.
+The `forward` action records each forwarded msg in `forwardedAt b c`
+along with the *index* on the `b→c` channel where it was pushed onto
+`sent`. The invariant below states that this recorded index is
+faithful: at the recorded index, the channel's `sent` array does
+contain that msg. This is the foundation for the runtime ref-FIFO-e2e
+claim — once we have it, forwarding-order on `b→c` matches the order
+of forward actions in the trace (since indices are append-only and
+ascending). -/
 
-Documented in ROADMAP M11 Phase A.7's "still pending" list. -/
+/-- **`forwardedAt` agrees with `sent`.** Whenever the trace has
+recorded a forwarding event at index `i` (i.e., `s.forwardedAt b c msg
+= some i`), then position `i` of the `b→c` channel's `sent` array
+contains that msg. Proven by induction over the action sequence. -/
+def InvForwardedAgreesWithSent (s : RuntimeState) : Prop :=
+  ∀ b c msg i,
+    s.forwardedAt b c msg = some i →
+    (s.channels b c).sent[i]? = some msg
+
+theorem InvForwardedAgreesWithSent.holds_at_initial :
+    InvForwardedAgreesWithSent initial := by
+  intro b c msg i hf
+  -- initial.forwardedAt = fun _ _ _ => none, so hf : none = some i is impossible.
+  simp [initial] at hf
+
+theorem InvForwardedAgreesWithSent.send
+    (s : RuntimeState) (asrc adst : Vat) (msg : ByteArray)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.send asrc adst msg).apply s) := by
+  intro b c m i hf
+  dsimp only [Action.apply] at hf ⊢
+  -- send only updates channels and adds to (asrc, adst).sent; forwardedAt unchanged.
+  have hf' : s.forwardedAt b c m = some i := hf
+  have ih := h b c m i hf'
+  by_cases heq : b = asrc ∧ c = adst
+  · obtain ⟨rfl, rfl⟩ := heq
+    rw [update_eq]
+    show ((s.channels b c).sent.push msg)[i]? = some m
+    have hi : i < (s.channels b c).sent.size := by
+      rcases Nat.lt_or_ge i (s.channels b c).sent.size with hlt | hge
+      · exact hlt
+      · rw [Array.getElem?_eq_none hge] at ih; exact absurd ih (by simp)
+    rw [Array.getElem?_push_lt hi]
+    rw [Array.getElem?_eq_getElem hi] at ih
+    exact ih
+  · show ((update s asrc adst _).channels b c).sent[i]? = some m
+    rw [update_ne _ asrc adst _ b c heq]
+    exact ih
+
+theorem InvForwardedAgreesWithSent.recv
+    (s : RuntimeState) (asrc adst : Vat)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.recv asrc adst).apply s) := by
+  intro b c m i hf
+  dsimp only [Action.apply] at hf ⊢
+  by_cases hbusy : (s.channels asrc adst).received.size < (s.channels asrc adst).sent.size
+  · simp [hbusy] at hf ⊢
+    -- recv only updates received; forwardedAt and sent unchanged.
+    have hf' : s.forwardedAt b c m = some i := hf
+    have ih := h b c m i hf'
+    by_cases heq : b = asrc ∧ c = adst
+    · obtain ⟨rfl, rfl⟩ := heq
+      rw [update_eq]
+      -- (s.channels b c).sent is unchanged by recv (only received grew).
+      exact ih
+    · rw [update_ne _ asrc adst _ b c heq]
+      exact ih
+  · simp [hbusy] at hf ⊢
+    exact h b c m i hf
+
+theorem InvForwardedAgreesWithSent.setupRoute
+    (s : RuntimeState) (v dst : Vat) (rf : Ref)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.setupRoute v dst rf).apply s) := by
+  intro b c m i hf
+  have hch := Action.setupRoute_channels s v dst rf
+  -- forwardedAt unchanged by setupRoute (only routesTo changes).
+  have hfsame : ((Action.setupRoute v dst rf).apply s).forwardedAt b c m =
+                s.forwardedAt b c m := by
+    dsimp only [Action.apply]
+    split
+    · split <;> rfl
+    · rfl
+  rw [congrFun (congrFun hch b) c]
+  rw [hfsame] at hf
+  exact h b c m i hf
+
+theorem InvForwardedAgreesWithSent.handoff
+    (s : RuntimeState) (g r e : Vat) (rf : Ref)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.handoff g r e rf).apply s) := by
+  intro b c m i hf
+  have hch := Action.handoff_channels s g r e rf
+  have hfsame : ((Action.handoff g r e rf).apply s).forwardedAt b c m =
+                s.forwardedAt b c m := by
+    dsimp only [Action.apply]
+    split
+    · rfl
+    · split
+      · split <;> rfl
+      · rfl
+  rw [congrFun (congrFun hch b) c]
+  rw [hfsame] at hf
+  exact h b c m i hf
+
+theorem InvForwardedAgreesWithSent.declarePromise
+    (s : RuntimeState) (p : Ref)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.declarePromise p).apply s) := by
+  intro b c m i hf
+  -- declarePromise only updates isPromise; channels and forwardedAt unchanged.
+  exact h b c m i hf
+
+theorem InvForwardedAgreesWithSent.resolvePromise
+    (s : RuntimeState) (rb rc : Vat) (p : Ref)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.resolvePromise rb rc p).apply s) := by
+  intro b c m i hf
+  have hch := Action.resolvePromise_channels s rb rc p
+  -- resolvePromise only updates resolvedTo + routesTo (no forwardedAt change).
+  have hfsame : ((Action.resolvePromise rb rc p).apply s).forwardedAt b c m =
+                s.forwardedAt b c m := by
+    dsimp only [Action.apply]
+    by_cases h1 : ¬ s.isPromise p
+    · simp [h1]
+    · simp [h1]
+      by_cases h2 : s.resolvedTo p = none
+      · simp [h2]
+      · simp [h2]
+  rw [congrFun (congrFun hch b) c]
+  rw [hfsame] at hf
+  exact h b c m i hf
+
+theorem InvForwardedAgreesWithSent.forward
+    (s : RuntimeState) (fb fc : Vat) (fmsg : ByteArray)
+    (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent ((Action.forward fb fc fmsg).apply s) := by
+  intro b c m i hf
+  dsimp only [Action.apply] at hf ⊢
+  by_cases hfwd : s.forwardedAt fb fc fmsg ≠ none
+  · simp [hfwd] at hf ⊢
+    exact h b c m i hf
+  · simp [hfwd] at hf ⊢
+    -- After forward: channels (fb, fc) has sent.push fmsg, and forwardedAt
+    -- now maps (fb, fc, fmsg) to old sent.size; else unchanged.
+    by_cases hkey : b = fb ∧ c = fc ∧ m = fmsg
+    · -- The newly-recorded forwarding event: i must equal old sent.size.
+      obtain ⟨hbeq, hceq, hmeq⟩ := hkey
+      subst hbeq; subst hceq; subst hmeq
+      simp at hf
+      subst hf
+      rw [update_eq]
+      exact Array.getElem?_push_size
+    · -- Old forwardedAt entry is still recorded; ih applies.
+      have hf' : s.forwardedAt b c m = some i := by
+        have hne : ¬ (b = fb ∧ c = fc ∧ m = fmsg) := hkey
+        simp [hne] at hf
+        exact hf
+      have ih := h b c m i hf'
+      have hi : i < (s.channels b c).sent.size := by
+        rcases Nat.lt_or_ge i (s.channels b c).sent.size with hlt | hge
+        · exact hlt
+        · rw [Array.getElem?_eq_none hge] at ih
+          exact absurd ih (by simp)
+      by_cases hbc : b = fb ∧ c = fc
+      · obtain ⟨hbeq2, hceq2⟩ := hbc
+        subst hbeq2; subst hceq2
+        show ((update s b c { sent := (s.channels b c).sent.push fmsg, received := (s.channels b c).received }).channels b c).sent[i]? = some m
+        rw [update_eq]
+        show ((s.channels b c).sent.push fmsg)[i]? = some m
+        rw [Array.getElem?_push_lt hi]
+        rw [Array.getElem?_eq_getElem hi] at ih
+        exact ih
+      · show ((update s fb fc _).channels b c).sent[i]? = some m
+        rw [update_ne _ fb fc _ b c hbc]
+        exact ih
+
+theorem InvForwardedAgreesWithSent.action_preserves
+    (s : RuntimeState) (a : Action) (h : InvForwardedAgreesWithSent s) :
+    InvForwardedAgreesWithSent (a.apply s) := by
+  cases a with
+  | send src dst msg       => exact InvForwardedAgreesWithSent.send s src dst msg h
+  | recv src dst           => exact InvForwardedAgreesWithSent.recv s src dst h
+  | setupRoute v dst rf    => exact InvForwardedAgreesWithSent.setupRoute s v dst rf h
+  | handoff g r e rf       => exact InvForwardedAgreesWithSent.handoff s g r e rf h
+  | declarePromise p       => exact InvForwardedAgreesWithSent.declarePromise s p h
+  | resolvePromise b c p   => exact InvForwardedAgreesWithSent.resolvePromise s b c p h
+  | forward b c msg        => exact InvForwardedAgreesWithSent.forward s b c msg h
+
+theorem InvForwardedAgreesWithSent.runActions_preserves
+    (s : RuntimeState) (h : InvForwardedAgreesWithSent s)
+    (actions : List Action) :
+    InvForwardedAgreesWithSent (runActions s actions) := by
+  induction actions generalizing s with
+  | nil => exact h
+  | cons a as ih =>
+    show InvForwardedAgreesWithSent (runActions (a.apply s) as)
+    exact ih (a.apply s) (InvForwardedAgreesWithSent.action_preserves s a h)
+
+theorem InvForwardedAgreesWithSent.reachable
+    (s : RuntimeState) (h : Reachable s) :
+    InvForwardedAgreesWithSent s := by
+  obtain ⟨actions, hrun⟩ := h
+  subst hrun
+  exact InvForwardedAgreesWithSent.runActions_preserves
+    initial InvForwardedAgreesWithSent.holds_at_initial actions
+
+/-- **Runtime ref-FIFO-e2e** (foundation). If two forwarding events
+have been recorded on the same `b→c` channel at indices `i1 < i2`,
+then on `b→c`'s `sent` array, msg1 appears at position `i1` and msg2
+at position `i2`. Combined with the per-channel FIFO at the `b→c`
+channel (`InvDeliverIsPrefix.reachable`), msgs delivered at C arrive
+in the same order they were forwarded. -/
+theorem runtime_forward_order_preserved
+    (s : RuntimeState) (hreach : Reachable s)
+    (b c : Vat) (msg1 msg2 : ByteArray) (i1 i2 : Nat)
+    (hf1 : s.forwardedAt b c msg1 = some i1)
+    (hf2 : s.forwardedAt b c msg2 = some i2) :
+    (s.channels b c).sent[i1]? = some msg1 ∧
+    (s.channels b c).sent[i2]? = some msg2 := by
+  have hinv := InvForwardedAgreesWithSent.reachable s hreach
+  exact ⟨hinv b c msg1 i1 hf1, hinv b c msg2 i2 hf2⟩
 
 end OcapnLean.Captp.RuntimeFifo
