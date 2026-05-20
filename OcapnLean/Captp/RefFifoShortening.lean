@@ -102,6 +102,16 @@ relation delivered : vat → vat → msg → Prop
 relation sentAt      : vat → vat → msg → Nat → Prop
 relation deliveredAt : vat → vat → msg → Nat → Prop
 
+-- Cross-channel origination + arrival cursors (mirror of
+-- RefFifoForwarding.lean's strengthened formulation). These let the
+-- bmc_sat witness below assert the failure of the strengthened
+-- `ref_fifo_e2e` directly: m₁ originated before m₂ at A, but m₂
+-- arrived at C before m₁.
+function originateCursor   : vat → Nat
+function deliverArrCursor  : vat → Nat
+relation originatedAt      : vat → msg → Nat → Prop
+relation receivedAtV       : vat → msg → Nat → Prop
+
 ------------------------------------------------------------------------
 -- Phase B addition: shortening flag
 ------------------------------------------------------------------------
@@ -122,6 +132,10 @@ after_init {
   isPromise R := False;
   resolvedTo R W := False;
   forwardedAt B C M K := False;
+  originateCursor S := 0;
+  deliverArrCursor V := 0;
+  originatedAt S M K := False;
+  receivedAtV V M K := False;
   shorteningEnabled := False
 }
 
@@ -156,6 +170,9 @@ action send (s d : vat) (m : msg) = {
   sentAt s d m (sendCursor s d) := True
   sendCursor s d := (sendCursor s d) + 1
   sentBy s m := True
+  -- Mirror of RefFifoForwarding's cross-channel origination tracking.
+  originatedAt s m (originateCursor s) := True
+  originateCursor s := (originateCursor s) + 1
 }
 
 action deliver (s d : vat) (m : msg) = {
@@ -165,6 +182,9 @@ action deliver (s d : vat) (m : msg) = {
   delivered s d m := True
   deliveredAt s d m (recvCursor s d) := True
   recvCursor s d := (recvCursor s d) + 1
+  -- Mirror of RefFifoForwarding's cross-channel arrival tracking.
+  receivedAtV d m (deliverArrCursor d) := True
+  deliverArrCursor d := (deliverArrCursor d) + 1
 }
 
 action handoff (g r e : vat) (rf : ref) = {
@@ -302,25 +322,55 @@ sat trace [shorten_drops_route_witness] {
     ¬ routesTo a p b)
 } by { bmc_sat }
 
-/-! ### Verification: does the Tribble race violate `ref_fifo_e2e` literally?
+/-! ### Strong-form ref_fifo_e2e violation (the headline counter-trace)
 
-`ref_fifo_e2e` from `RefFifoForwarding.lean` requires **both** msgs to
-traverse the same `(forwarder, dest)` channel pair:
+The strengthened `ref_fifo_e2e` from `RefFifoForwarding.lean` uses
+S's global origination cursor and C's global arrival cursor instead
+of per-channel cursors. This trace exhibits A originating m₁ before
+m₂ (`O1 < O2`), both ending up at C, but m₂ arriving BEFORE m₁ at C
+(`R2 < R1`) — a direct violation of the strengthened formulation.
 
-  sentAt S B M1 K1 ∧ sentAt S B M2 K2 ∧
-  forwardedAt B C M1 KF1 ∧ forwardedAt B C M2 KF2 ∧ ...
-  K1 < K2 → N1 < N2
-
-Under shortening, m₂ takes the **fast path** A→C directly — `sentAt S
-B m₂` and `forwardedAt B C m₂` are both false. So `ref_fifo_e2e`'s
-antecedent fails on the Tribble race and the safety is vacuously
-satisfied. Below: a sat trace witnessing exactly this — a state where
-the race occurs AND `ref_fifo_e2e`'s antecedent (both forwarded) is
-unsatisfiable for the racing msgs, so the literal safety holds while
-the intuitive race is realized.
+This is the mechanical contribution: a concrete bmc_sat witness that
+naive shortening violates the user-facing per-(sender, ref) delivery
+order at the resolution host. Phase C's `op:flush` precondition will
+restore the safety by requiring the old wire to drain before the
+sender can shorten.
 -/
 #guard_msgs(drop warning, drop info) in
-sat trace [race_with_e2e_safety_vacuous] {
+sat trace [ref_fifo_e2e_violated_by_shorten] {
+  declarePromise
+  setupRoute
+  send                  -- A sends m₁ on A→B (slow path); O1 = 0.
+  deliver               -- B receives m₁.
+  resolvePromise        -- B resolves P→C, installs routesTo B P C.
+  enableShortening
+  shorten               -- A's route: A→B → A→C (mutating).
+  send                  -- A sends m₂ on A→C (fast path); O2 = 1.
+  deliver               -- C receives m₂; R2 = 0 at C.
+  forward               -- B forwards m₁ to C.
+  deliver               -- C receives m₁; R1 = 1 at C.
+  assert (∃ (a b c : vat) (m1 m2 : msg) (o1 o2 r1 r2 : Nat),
+    a ≠ b ∧ a ≠ c ∧ b ≠ c ∧
+    sentBy a m1 ∧ sentBy a m2 ∧
+    targetRef m1 = targetRef m2 ∧
+    isPromise (targetRef m1) ∧
+    resolvedTo (targetRef m1) c ∧
+    originatedAt a m1 o1 ∧ originatedAt a m2 o2 ∧
+    receivedAtV c m1 r1 ∧ receivedAtV c m2 r2 ∧
+    -- The violation: A originated m₁ first, but C received m₂ first.
+    o1 < o2 ∧ r2 < r1)
+} by { bmc_sat }
+
+/-! ### Old vacuity witness (kept for reference)
+
+The original per-channel `ref_fifo_e2e` formulation conditioned on
+both msgs traversing the same `(forwarder, dest)` pair — under
+shortening m₂ bypasses B, so the antecedent fails and the safety is
+vacuously true. Kept as evidence of WHY the strengthening above was
+necessary.
+-/
+#guard_msgs(drop warning, drop info) in
+sat trace [race_with_old_e2e_safety_vacuous] {
   declarePromise
   setupRoute
   send
@@ -336,17 +386,13 @@ sat trace [race_with_e2e_safety_vacuous] {
     a ≠ b ∧ a ≠ c ∧ b ≠ c ∧
     sentBy a m1 ∧ sentBy a m2 ∧
     targetRef m1 = targetRef m2 ∧
-    -- m₁ goes A→B→C (slow path, via forward).
     (∃ k1, sentAt a b m1 k1) ∧
     (∃ kf1, forwardedAt b c m1 kf1) ∧
     delivered b c m1 ∧
-    -- m₂ goes A→C directly (fast path, post-shorten).
     (∃ k2, sentAt a c m2 k2) ∧
     delivered a c m2 ∧
-    -- The crucial structural fact: m₂ is NOT on the A→B channel,
-    -- so `ref_fifo_e2e`'s antecedent (sentAt S B M2 K2) is false.
+    -- m₂ is NOT on the A→B channel; not forwarded by B.
     (∀ k, ¬ sentAt a b m2 k) ∧
-    -- And m₂ is NOT forwarded by B, so forwardedAt B C M2 is false.
     (∀ kf, ¬ forwardedAt b c m2 kf))
 } by { bmc_sat }
 
