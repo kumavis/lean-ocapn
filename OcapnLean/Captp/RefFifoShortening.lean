@@ -1,6 +1,9 @@
 import Veil
 
 set_option linter.dupNamespace false
+-- Bump from the 5s default to match RefFifoForwarding's setting; the
+-- bmc_sat traces over the strengthened state need more SMT budget.
+set_option veil.smt.timeout 60
 
 /-!
 # CapTP promise shortening breaks `ref_fifo` — M11 Phase B

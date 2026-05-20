@@ -4,6 +4,10 @@ set_option linter.dupNamespace false
 -- Print counter-examples for any safety/invariant that fails inductively.
 -- Helps diagnose CI failures without a local SMT-capable build.
 set_option veil.printCounterexamples true
+-- Bump from the 5s default — the strengthened ref_fifo_e2e chain
+-- (cross-channel cursors + forwarding + per-channel FIFO) needs more
+-- SMT budget to discharge.
+set_option veil.smt.timeout 60
 
 /-!
 # CapTP end-to-end reference FIFO with forwarding — M11 Phase A.5
