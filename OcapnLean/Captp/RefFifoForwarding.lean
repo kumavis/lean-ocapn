@@ -1,6 +1,9 @@
 import Veil
 
 set_option linter.dupNamespace false
+-- Print counter-examples for any safety/invariant that fails inductively.
+-- Helps diagnose CI failures without a local SMT-capable build.
+set_option veil.printCounterexamples true
 
 /-!
 # CapTP end-to-end reference FIFO with forwarding — M11 Phase A.5
@@ -499,12 +502,31 @@ invariant [same_channel_deliver_matches_arrival]
   receivedAtV V M1 R1 ∧ receivedAtV V M2 R2 ∧
   J1 < J2 → R1 < R2
 
--- Bridge 2: for two sends from same sender to same channel, per-channel
--- send-order matches global origination-order at the sender.
+-- Bridge 2: per-channel send-order matches global origination-order at
+-- the sender (forward direction).
 invariant [same_channel_send_matches_origination]
   sentAt S D M1 K1 ∧ sentAt S D M2 K2 ∧
   originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
   K1 < K2 → O1 < O2
+
+-- Bridge 2b: converse — origination-order at sender matches per-channel
+-- send-order on the same destination. Needed so `ref_fifo_e2e`'s
+-- antecedent O1 < O2 can be translated to K1 < K2 on the unique route.
+invariant [same_channel_origination_matches_send]
+  sentAt S D M1 K1 ∧ sentAt S D M2 K2 ∧
+  originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
+  O1 < O2 → K1 < K2
+
+-- Bridge 3: forwarding preserves global origination-order. The analog
+-- of `forward_preserves_send_order` lifted to global cursors. Combined
+-- with `same_channel_*_matches_*` invariants, this chains the slow
+-- A→B→C path through to `ref_fifo_e2e`.
+invariant [forward_preserves_origination_order]
+  sentBy S M1 ∧ sentBy S M2 ∧
+  targetRef M1 = targetRef M2 ∧
+  forwardedAt B C M1 K1 ∧ forwardedAt B C M2 K2 ∧
+  originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
+  O1 < O2 → K1 < K2
 
 #gen_spec
 
@@ -521,6 +543,7 @@ forwards m₁ and m₂; C receives both. The final assert pins down that
 the originator A appears, the resolution host C appears, two distinct
 msgs targeted the same promise, and both made it through the chain.
 -/
+set_option maxHeartbeats 1000000 in
 #guard_msgs(drop warning, drop info) in
 sat trace [promise_resolve_and_forward] {
   declarePromise
@@ -552,6 +575,7 @@ B receives m₂; B forwards m₁ then m₂; C receives both in order.
 Confirms `ref_fifo_e2e` holds even when resolution interleaves with
 origination.
 -/
+set_option maxHeartbeats 1000000 in
 #guard_msgs(drop warning, drop info) in
 sat trace [resolve_mid_stream] {
   declarePromise

@@ -268,6 +268,7 @@ m₂ arrives at C **before** m₁ — i.e. send-order at A is reversed at
 the delivery point C. This is the **Tribble race** in mechanized
 form: the failure mode that Phase C's `op:flush` precludes.
 -/
+set_option maxHeartbeats 1000000 in
 #guard_msgs(drop warning, drop info) in
 sat trace [tribble_race] {
   declarePromise
@@ -304,6 +305,7 @@ loss — `sentAt_via_route` from `RefFifoForwarding.lean` would be
 violated here — that Phase C's `op:flush` precondition prevents by
 requiring the old wire be drained before `shorten` can fire.
 -/
+set_option maxHeartbeats 1000000 in
 #guard_msgs(drop warning, drop info) in
 sat trace [shorten_drops_route_witness] {
   declarePromise
@@ -336,6 +338,7 @@ order at the resolution host. Phase C's `op:flush` precondition will
 restore the safety by requiring the old wire to drain before the
 sender can shorten.
 -/
+set_option maxHeartbeats 1000000 in
 #guard_msgs(drop warning, drop info) in
 sat trace [ref_fifo_e2e_violated_by_shorten] {
   declarePromise
@@ -369,6 +372,7 @@ shortening m₂ bypasses B, so the antecedent fails and the safety is
 vacuously true. Kept as evidence of WHY the strengthening above was
 necessary.
 -/
+set_option maxHeartbeats 1000000 in
 #guard_msgs(drop warning, drop info) in
 sat trace [race_with_old_e2e_safety_vacuous] {
   declarePromise
