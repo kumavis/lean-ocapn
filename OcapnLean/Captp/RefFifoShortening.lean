@@ -182,9 +182,10 @@ action deliver (s d : vat) (m : msg) = {
   delivered s d m := True
   deliveredAt s d m (recvCursor s d) := True
   recvCursor s d := (recvCursor s d) + 1
-  -- Mirror of RefFifoForwarding's cross-channel arrival tracking.
-  receivedAtV d m (deliverArrCursor d) := True
-  deliverArrCursor d := (deliverArrCursor d) + 1
+  -- Mirror of RefFifoForwarding: first-arrival-only at d (dedup).
+  if ∀ R, ¬ receivedAtV d m R then
+    receivedAtV d m (deliverArrCursor d) := True
+    deliverArrCursor d := (deliverArrCursor d) + 1
 }
 
 action handoff (g r e : vat) (rf : ref) = {

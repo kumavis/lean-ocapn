@@ -198,6 +198,13 @@ action send (s d : vat) (m : msg) = {
 }
 
 -- Receive a msg from the head of the channel.
+--
+-- A msg may arrive at the same vat multiple times via different source
+-- channels (e.g., when multiple intermediaries route the same ref to
+-- the same resolution host — both can forward). Real CapTP dedupes at
+-- the receiver. We mirror that by only setting `receivedAtV` on the
+-- FIRST arrival of M at D; subsequent arrivals are recorded only at
+-- the per-channel `deliveredAt` level.
 action deliver (s d : vat) (m : msg) = {
   require pending s d m
   require sentAt s d m (recvCursor s d)
@@ -205,9 +212,12 @@ action deliver (s d : vat) (m : msg) = {
   delivered s d m := True
   deliveredAt s d m (recvCursor s d) := True
   recvCursor s d := (recvCursor s d) + 1
-  -- Cross-channel arrival-order tracking at D.
-  receivedAtV d m (deliverArrCursor d) := True
-  deliverArrCursor d := (deliverArrCursor d) + 1
+  -- First-arrival-only: set receivedAtV and bump deliverArrCursor only
+  -- if M has never arrived at D before. This keeps receivedAtV
+  -- functional in (V, M).
+  if ∀ R, ¬ receivedAtV d m R then
+    receivedAtV d m (deliverArrCursor d) := True
+    deliverArrCursor d := (deliverArrCursor d) + 1
 }
 
 -- Handoff: additive routing extension (carried from RefFifo.lean).
