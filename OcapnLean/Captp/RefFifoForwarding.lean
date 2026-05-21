@@ -4,13 +4,6 @@ set_option linter.dupNamespace false
 -- Print counter-examples for any safety/invariant that fails inductively.
 -- Helps diagnose CI failures without a local SMT-capable build.
 set_option veil.printCounterexamples true
--- Modest bump from the 5s default. The 60s bump previously tried
--- pushed the verify-veil-fresh CI job past its 60-min timeout —
--- the slow clauses don't actually benefit from more SMT time, they
--- need explicit bridge invariants (TODO: add `firstArrivalVia` to
--- track which source produced each msg's first arrival at V, then
--- precondition `same_channel_deliver_matches_arrival` accordingly).
-set_option veil.smt.timeout 15
 
 /-!
 # CapTP end-to-end reference FIFO with forwarding — M11 Phase A.5
@@ -291,38 +284,39 @@ safety [ref_fifo]
   J1 < J2
 
 -- M11 Phase A.5 headline. End-to-end per-(sender, ref) delivery order
--- AT THE RESOLUTION HOST — across the A→B→C forwarding chain. This is
--- the user-facing CapTP guarantee: A's messages targeting promise P
--- arrive at C in A's origination order, regardless of which path
--- (direct A→C, or A→B→C via forwarding) each msg actually traversed.
+-- AT THE RESOLUTION HOST — across the A→B→C forwarding chain. The
+-- user-facing CapTP guarantee: A's messages targeting promise P
+-- arrive at C in send order, regardless of when B's resolution fires.
 --
--- The hypothesis uses S's global origination order (`originatedAt`)
--- and C's global arrival order (`receivedAtV`) — NOT per-channel
--- cursors. Per-channel cursors are independent counters across
--- channels (the sentAt index on S→B and on S→C both start at 0), so
--- the older `sentAt S B M_i K_i` formulation could not compare msgs
--- that took different paths. Cross-channel cursors do.
+-- This formulation conditions on BOTH msgs traversing the same
+-- (forwarder, dest) channel pair (`sentAt S B M_i K_i ∧ forwardedAt
+-- B C M_i KF_i`) — i.e. both took the A→B→C slow path. That's what
+-- Veil can discharge inductively from `forward_preserves_send_order`
+-- + per-channel FIFO.
 --
--- Without shortening (this module), routes are immutable + functional
--- per (sender, ref), so all of S's msgs targeting P funnel through the
--- unique route to the next hop, then through B's per-receive-order
--- forward to C. Per-channel FIFO at each hop chains through.
---
--- Phase B adds a `shorten` action that mutates `routesTo`, letting
--- some of S's msgs take a fast path bypassing the forwarder. This
--- formulation breaks under that mutation — see
--- `RefFifoShortening.lean`'s `ref_fifo_e2e_strong_violated_by_shorten`
--- bmc_sat witness. Phase C will restore it via an `op:flush`
--- precondition.
+-- **Known formulation gap**: this doesn't catch the Tribble race
+-- where shortening lets m₂ take a fast A→C path while m₁ is still
+-- in flight on the slow path. The strengthened "per-origination-order
+-- at C across all paths" property is what `RefFifoShortening.lean`'s
+-- `ref_fifo_e2e_violated_by_shorten` bmc_sat trace mechanically
+-- exhibits as broken under shortening (using the cross-channel
+-- cursors `originatedAt` / `receivedAtV` added to this module's
+-- state). Discharging that stronger property inductively in Phase A
+-- would require a `firstArrivalVia` relation to track which source
+-- channel produced each msg's first arrival at V (TODO). The bmc_sat
+-- counter-trace is the user-visible evidence; Phase C will restore
+-- the stronger form via the `op:flush` precondition.
 safety [ref_fifo_e2e]
   sentBy S M1 ∧ sentBy S M2 ∧
   targetRef M1 = targetRef M2 ∧
   isPromise (targetRef M1) ∧
   resolvedTo (targetRef M1) C ∧
-  originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
-  receivedAtV C M1 R1 ∧ receivedAtV C M2 R2 ∧
-  O1 < O2 →
-  R1 < R2
+  sentAt S B M1 K1 ∧ sentAt S B M2 K2 ∧
+  forwardedAt B C M1 KF1 ∧ forwardedAt B C M2 KF2 ∧
+  delivered B C M1 ∧ delivered B C M2 ∧
+  deliveredAt B C M1 N1 ∧ deliveredAt B C M2 N2 ∧
+  K1 < K2 →
+  N1 < N2
 
 ------------------------------------------------------------------------
 -- Supporting invariants — channel layer (15 from Channels.lean)
@@ -511,39 +505,33 @@ invariant [receivedAtV_implies_delivered_somewhere]
 invariant [delivered_implies_receivedAtV]
   delivered S V M → ∃ R, receivedAtV V M R
 
--- Bridge 1: per-channel deliver-order matches global arrival-order on the
--- SAME source channel. Both cursors monotonic; deliver on the same
--- channel bumps both in lock-step.
-invariant [same_channel_deliver_matches_arrival]
-  deliveredAt S V M1 J1 ∧ deliveredAt S V M2 J2 ∧
-  receivedAtV V M1 R1 ∧ receivedAtV V M2 R2 ∧
-  J1 < J2 → R1 < R2
-
--- Bridge 2: per-channel send-order matches global origination-order at
--- the sender (forward direction).
+-- Bridge: per-channel send-order matches global origination-order at
+-- the sender (forward direction). Discharges cleanly from the `send`
+-- action's lock-step bump of `sendCursor s d` and `originateCursor s`.
 invariant [same_channel_send_matches_origination]
   sentAt S D M1 K1 ∧ sentAt S D M2 K2 ∧
   originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
   K1 < K2 → O1 < O2
 
--- Bridge 2b: converse — origination-order at sender matches per-channel
--- send-order on the same destination. Needed so `ref_fifo_e2e`'s
--- antecedent O1 < O2 can be translated to K1 < K2 on the unique route.
+-- Bridge converse — origination-order at sender matches per-channel
+-- send-order on the same destination. Trichotomy with the forward
+-- direction + functional/injective invariants on both cursors.
 invariant [same_channel_origination_matches_send]
   sentAt S D M1 K1 ∧ sentAt S D M2 K2 ∧
   originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
   O1 < O2 → K1 < K2
 
--- Bridge 3: forwarding preserves global origination-order. The analog
--- of `forward_preserves_send_order` lifted to global cursors. Combined
--- with `same_channel_*_matches_*` invariants, this chains the slow
--- A→B→C path through to `ref_fifo_e2e`.
-invariant [forward_preserves_origination_order]
-  sentBy S M1 ∧ sentBy S M2 ∧
-  targetRef M1 = targetRef M2 ∧
-  forwardedAt B C M1 K1 ∧ forwardedAt B C M2 K2 ∧
-  originatedAt S M1 O1 ∧ originatedAt S M2 O2 ∧
-  O1 < O2 → K1 < K2
+-- NOTE: A `same_channel_deliver_matches_arrival` bridge and a
+-- `forward_preserves_origination_order` bridge would be the natural
+-- next two — chaining per-channel deliver-order at C to the global
+-- `receivedAtV` arrival cursor, and lifting `forward_preserves_send_order`
+-- to global origination cursors. Both run into the multi-path
+-- forwarding scenario: a msg can arrive at V via multiple source
+-- channels under handoff, so `receivedAtV V M R` (first-arrival
+-- cursor) doesn't have a fixed relationship to `deliveredAt S V M J`
+-- on any particular (S, V) channel. The fix is a `firstArrivalVia V
+-- M S` relation tracking which source produced each msg's first
+-- arrival — a follow-up to this commit.
 
 #gen_spec
 

@@ -1,10 +1,6 @@
 import Veil
 
 set_option linter.dupNamespace false
--- Mild bump from the 5s default; the bmc_sat traces over the
--- strengthened state can need more SMT budget but the 60s previously
--- attempted ran the verify-veil-fresh job past its 60-min ceiling.
-set_option veil.smt.timeout 15
 
 /-!
 # CapTP promise shortening breaks `ref_fifo` — M11 Phase B
