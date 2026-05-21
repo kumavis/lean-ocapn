@@ -121,48 +121,58 @@ def runGreeterCallback (s : Captp.Client.Session) : IO Unit := do
 
 /-- Scenario 3 — promise pipelining via Car Factory Builder.
 
-The pipelining shape: send to `carFactoryBuilder` with an *answer*
-slot. Without waiting for it to resolve, immediately send to
-`<desc:answer that-slot>` with the car-spec args, asking for a
-*second* answer (plus an rmd so we can await the result). The
-receiver must accept the second send addressed at the still-unresolved
-answer. -/
+The full 3-hop chain from `projects/ocapn-test-suite/tests/op_deliver.py`'s
+`test_deliver_promise_pipeline`:
+
+  1. Deliver to `carFactoryBuilder` (no args), allocate answer slot
+     for the resulting car-factory ref.
+  2. **Pipelined:** deliver to `<desc:answer factoryAns>` with
+     `[[color, model]]` args, allocate answer slot for the car ref.
+  3. **Pipelined again:** deliver to `<desc:answer carAns>` with
+     no args + an rmd. Expect a fulfill of `"Vroom! I am a {color}
+     {model} car!"`.
+
+The receiver must accept each send addressed at the still-unresolved
+answer of the previous step and propagate the actual delivery
+through the chain in order. -/
 def runPipelineCarFactory (s : Captp.Client.Session) : IO Unit := do
   let fetchRmd ← Captp.Client.fetch s Captp.Bootstrap.carFactoryBuilderSwiss
   let builderRefVal ← Captp.Client.expectFulfill s fetchRmd
   let builderPos := match Session.extractImportObjPos builderRefVal with
                     | some n => n
                     | none   => 0
-  -- Step 1: deliver to builder with an answer slot for the factory ref.
+  -- Step 1: deliver to builder with answer slot for the factory ref.
   let (_, some factoryAns) ← Captp.Client.deliver s
                               (Session.buildDescExport builderPos) []
                               (withAnswer := true) (withRmd := false)
     | throw (IO.userError "[interop-endo] pipeline: builder deliver did not allocate answer slot")
-  -- Step 2: PIPELINED — send to <desc:answer factoryAns> immediately,
-  -- before we've seen the builder's answer resolve. Ask for an rmd so
-  -- we can await the list of cars.
-  let carSpecs : List ValueExt :=
-    [ .list [ .sym "ford".toUTF8.toList, .sym "red".toUTF8.toList ]
-    , .list [ .sym "toyota".toUTF8.toList, .sym "blue".toUTF8.toList ] ]
-  let (some carsRmd, _) ← Captp.Client.deliver s
-                           (buildDescAnswer factoryAns)
-                           [ .list carSpecs ]
-                           (withRmd := true)
-    | throw (IO.userError "[interop-endo] pipeline: pipelined deliver did not allocate rmd")
-  -- Step 3: await the pipelined result. If the receiver pipelined
-  -- correctly, this fulfills with a list of two car descriptions.
-  let result ← Captp.Client.expectFulfill s carsRmd
+  -- Step 2: PIPELINED — deliver to <desc:answer factoryAns>. The
+  -- car-factory handler expects exactly one arg shaped as
+  -- `[<color-sym>, <model-sym>]` (a single 2-element list).
+  let color := "red".toUTF8.toList
+  let model := "zoomracer".toUTF8.toList
+  let (_, some carAns) ← Captp.Client.deliver s
+                          (buildDescAnswer factoryAns)
+                          [ .list [.sym color, .sym model] ]
+                          (withAnswer := true) (withRmd := false)
+    | throw (IO.userError "[interop-endo] pipeline: factory deliver did not allocate answer slot")
+  -- Step 3: PIPELINED AGAIN — deliver to <desc:answer carAns> with
+  -- no args + an rmd. The car responds with the "Vroom! …" string.
+  let (some driveRmd, _) ← Captp.Client.deliver s
+                            (buildDescAnswer carAns) []
+                            (withRmd := true)
+    | throw (IO.userError "[interop-endo] pipeline: drive deliver did not allocate rmd")
+  let result ← Captp.Client.expectFulfill s driveRmd
   match result with
-  | .list cars =>
-    if cars.length ≠ 2 then
-      throw (IO.userError s!"[interop-endo] pipeline: expected 2 cars, got {cars.length}")
-    -- Don't assert on the exact car string shape — Endo and ocapn-lean
-    -- both encode it as `"Vroom! …"` but the precise format isn't
-    -- pinned by the spec; the structural roundtrip (2-element list)
-    -- is what we're verifying.
-    IO.println s!"[interop-endo] pipelining ok ({cars.length} cars resolved)"
+  | .str bytes =>
+    let strActual := String.fromUTF8! ⟨bytes.toArray⟩
+    let expected := s!"Vroom! I am a red zoomracer car!"
+    if strActual = expected then
+      IO.println s!"[interop-endo] pipelining ok ({strActual})"
+    else
+      throw (IO.userError s!"[interop-endo] pipeline: car string mismatch: got {strActual}")
   | _ =>
-    throw (IO.userError s!"[interop-endo] pipeline: expected list result, got something else")
+    throw (IO.userError s!"[interop-endo] pipeline: expected string result")
 
 def main (args : List String) : IO Unit := do
   let port := parsePort args
