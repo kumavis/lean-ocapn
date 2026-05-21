@@ -6,19 +6,32 @@ is a Python program that drives an OCapN peer over the
 use it as our headline conformance check and to validate that the
 protocol itself has a single shared interpretation.
 
-## Result summary _(2026-05-15)_
+## Result summary _(2026-05-20)_
 
-| Server impl   | op_start_session | op_deliver | op_abort | op_listen | op_gc | third_party_handoffs | **Total** |
-|---|---|---|---|---|---|---|---|
-| **ocapn-lean** (this repo) | 5/5 | 4/4 | 1/1 | 3/3 | 4/4 | 7/7 | **24/24** |
-| **@endo/ocapn** (`projects/endo`) | 5/5 | 4/4 | 1/1 | 3/3 | 4/4 | 7/7 | **24/24** |
+**Python suite as client → ocapn-lean as server** (the upstream
+conformance suite). Run by `build-and-test` in CI on every push.
 
-Both implementations pass the entire suite. The two share no code
-paths — Endo is a TypeScript+SES implementation; ocapn-lean is a
-Lean 4 implementation built on libsodium FFI. Identical pass-rate
-against the same test suite is strong evidence that the wire-format
-and message-sequencing decisions in `OcapnLean.Captp.Session` match
-the consensus encoded in the upstream suite.
+| op_start_session | op_deliver | op_abort | op_listen | op_gc | third_party_handoffs | **Total** |
+|---|---|---|---|---|---|---|
+| 5/5 | 4/4 | 1/1 | 3/3 | 4/4 | 7/7 | **24/24** |
+
+**ocapn-lean as client → external server** (true Lean ↔ X interop).
+Run by per-peer CI jobs.
+
+| External peer | Scenarios exercised | CI job | Status |
+|---|---|---|---|
+| **@endo/ocapn** | echo round-trip, greeter callback, promise pipelining via Car Factory Builder | `interop-lean-vs-endo` | ✅ |
+| **Spritely Goblins v0.17** (WS, legacy auth) | RFC 6455 handshake → designator-auth (raw 64-byte) → post-auth probe | `interop-goblins-ws` | ✅ |
+| **Ridley dobjects** (TCP, netstring framing) | handshake completes with `--frame netstring --captp-version 0.1 --hints false` | `interop-ridley` | ✅ |
+
+Both implementations of the conformance suite (ocapn-lean and
+@endo/ocapn) pass it. The two share no code paths — Endo is a
+TypeScript+SES implementation; ocapn-lean is Lean 4 on libsodium
+FFI. And the new `interop-lean-vs-endo` job goes the *other* way:
+the Lean client driver (`scripts/ClientVsEndo.lean`) connects to
+Endo's test server and exercises the same well-known objects the
+Python suite uses, validating bidirectional wire-format agreement —
+not just same-direction pass rate.
 
 ## Reproducing
 

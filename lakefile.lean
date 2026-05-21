@@ -279,6 +279,11 @@ lean_exe «client-vs-external» where
   srcDir := "."
   moreLinkArgs := shimLinkArgs
 
+lean_exe «client-vs-endo» where
+  root := `scripts.ClientVsEndo
+  srcDir := "."
+  moreLinkArgs := shimLinkArgs
+
 lean_exe «uds-smoke» where
   root := `scripts.UdsSmoke
   srcDir := "."

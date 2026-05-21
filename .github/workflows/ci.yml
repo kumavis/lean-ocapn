@@ -110,7 +110,14 @@ jobs:
           path: server.log
           if-no-files-found: ignore
 
-  interop-endo:
+  interop-lean-vs-endo:
+    # Real Lean ↔ Endo interop. The Lean client driver
+    # (`scripts/ClientVsEndo.lean`) connects to Endo's test server
+    # and exercises three CapTP scenarios: echo round-trip, greeter
+    # callback (bidirectional delivery), and promise pipelining via
+    # the Car Factory Builder. Replaces the older `interop-endo`
+    # job which was actually `python-suite ↔ endo` parity and never
+    # touched ocapn-lean code.
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -123,7 +130,36 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsodium-dev python3 python3-cryptography python3-stem
+          sudo apt-get install -y libsodium-dev libwslay-dev
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null \
+                   | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean-toolchain', 'lakefile.lean', 'lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
+
+      - name: Build Lean interop driver
+        run: lake build client-vs-endo
 
       - name: Set up Node 22
         uses: actions/setup-node@v4
@@ -144,7 +180,7 @@ jobs:
           YARN_NODE_LINKER: node-modules
         run: node /tmp/yarn4-bin/yarn.js install --mode=skip-build
 
-      - name: Start Endo OCapN test server
+      - name: Start Endo OCapN test server (background)
         run: |
           node --expose-gc \
             projects/endo/packages/ocapn/test/python-test-suite/index.js \
@@ -155,11 +191,9 @@ jobs:
             sleep 0.1
           done
 
-      - name: Run upstream Python test suite (Endo)
+      - name: Drive Endo from the Lean client
         run: |
-          cd projects/ocapn-test-suite
-          python3 test_runner.py \
-            'ocapn://a2ef69ddd5f84840970612ff660f5058.tcp-testing-only?host=127.0.0.1&port=22046'
+          ./.lake/build/bin/client-vs-endo --port 22046
 
       - name: Stop Endo
         if: always()
