@@ -4,10 +4,13 @@ set_option linter.dupNamespace false
 -- Print counter-examples for any safety/invariant that fails inductively.
 -- Helps diagnose CI failures without a local SMT-capable build.
 set_option veil.printCounterexamples true
--- Bump from the 5s default — the strengthened ref_fifo_e2e chain
--- (cross-channel cursors + forwarding + per-channel FIFO) needs more
--- SMT budget to discharge.
-set_option veil.smt.timeout 60
+-- Modest bump from the 5s default. The 60s bump previously tried
+-- pushed the verify-veil-fresh CI job past its 60-min timeout —
+-- the slow clauses don't actually benefit from more SMT time, they
+-- need explicit bridge invariants (TODO: add `firstArrivalVia` to
+-- track which source produced each msg's first arrival at V, then
+-- precondition `same_channel_deliver_matches_arrival` accordingly).
+set_option veil.smt.timeout 15
 
 /-!
 # CapTP end-to-end reference FIFO with forwarding — M11 Phase A.5
