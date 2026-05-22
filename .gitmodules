@@ -4,7 +4,7 @@
 	shallow = true
 [submodule "projects/goblins"]
 	path = projects/goblins
-	url = https://gitlab.com/spritely/guile-goblins
+	url = https://codeberg.org/spritely/goblins
 	shallow = true
 [submodule "projects/syrup-ocapn"]
 	path = projects/syrup-ocapn
@@ -25,4 +25,9 @@
 [submodule "projects/endo"]
 	path = projects/endo
 	url = https://github.com/endojs/endo
+	shallow = true
+[submodule "projects/ocapn-message-ordering"]
+	path = projects/ocapn-message-ordering
+	url = https://github.com/kumavis/ocapn.git
+	branch = claude/ocapn-message-ordering-WNRFV
 	shallow = true

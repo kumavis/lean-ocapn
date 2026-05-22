@@ -1,0 +1,542 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential unzip xz-utils \
+            libsodium-dev libwslay-dev \
+            python3 python3-pip python3-cryptography python3-stem
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          # Sanity check
+          "$HOME/.elan/bin/lean" --version
+          "$HOME/.elan/bin/lake" --version
+
+      - name: Cache Lake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean-toolchain', 'lakefile.lean', 'lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
+
+      - name: Build (verifier proofs + executables + smoke tests)
+        run: |
+          lake build OcapnLean ocapn-server \
+            client-smoke client-vs-external client-vs-uds \
+            sturdyref-smoke ws-smoke ws-auth-smoke \
+            syrup-fuzz multi-vat-fifo-smoke \
+            uds-smoke session-handshake-smoke enlivener-smoke
+
+      - name: In-process smoke tests
+        run: |
+          ./.lake/build/bin/crypto-smoke || true
+          ./.lake/build/bin/session-handshake-smoke
+          ./.lake/build/bin/enlivener-smoke
+          ./.lake/build/bin/client-smoke
+          ./.lake/build/bin/sturdyref-smoke
+          ./.lake/build/bin/uds-smoke
+          ./.lake/build/bin/ws-smoke
+          ./.lake/build/bin/ws-auth-smoke
+          ./.lake/build/bin/syrup-fuzz
+          ./.lake/build/bin/multi-vat-fifo-smoke
+
+      - name: Run server in background
+        run: |
+          ./.lake/build/bin/ocapn-server --port 22082 \
+            > server.log 2>&1 &
+          echo $! > server.pid
+          # Wait for it to bind
+          for i in $(seq 1 50); do
+            ss -tlnp 2>/dev/null | grep -q ':22082' && break
+            sleep 0.1
+          done
+
+      - name: Run upstream Python test suite (ocapn-lean)
+        run: |
+          cd projects/ocapn-test-suite
+          python3 test_runner.py \
+            'ocapn://a2ef69ddd5f84840970612ff660f5058.tcp-testing-only?host=127.0.0.1&port=22082'
+
+      - name: Lean client driver vs running server
+        run: |
+          ./.lake/build/bin/client-vs-external --port 22082
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log
+          path: server.log
+          if-no-files-found: ignore
+
+  interop-lean-vs-endo:
+    # Real Lean ↔ Endo interop. The Lean client driver
+    # (`scripts/ClientVsEndo.lean`) connects to Endo's test server
+    # and exercises three CapTP scenarios: echo round-trip, greeter
+    # callback (bidirectional delivery), and promise pipelining via
+    # the Car Factory Builder. Replaces the older `interop-endo`
+    # job which was actually `python-suite ↔ endo` parity and never
+    # touched ocapn-lean code.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsodium-dev libwslay-dev
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null \
+                   | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean-toolchain', 'lakefile.lean', 'lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
+
+      - name: Build Lean interop driver
+        run: lake build client-vs-endo
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch yarn 4 binary
+        run: |
+          mkdir -p /tmp/yarn4-bin
+          curl -fsSL https://repo.yarnpkg.com/4.13.0/packages/yarnpkg-cli/bin/yarn.js \
+            -o /tmp/yarn4-bin/yarn.js
+          node /tmp/yarn4-bin/yarn.js --version
+
+      - name: Install Endo deps
+        working-directory: projects/endo
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
+          YARN_NODE_LINKER: node-modules
+        run: node /tmp/yarn4-bin/yarn.js install --mode=skip-build
+
+      - name: Start Endo OCapN test server (background)
+        run: |
+          node --expose-gc \
+            projects/endo/packages/ocapn/test/python-test-suite/index.js \
+            > endo-server.log 2>&1 &
+          echo $! > endo.pid
+          for i in $(seq 1 50); do
+            ss -tlnp 2>/dev/null | grep -q ':22046' && break
+            sleep 0.1
+          done
+
+      - name: Drive Endo from the Lean client
+        run: |
+          ./.lake/build/bin/client-vs-endo --port 22046
+
+      - name: Stop Endo
+        if: always()
+        run: |
+          if [ -f endo.pid ]; then
+            kill "$(cat endo.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload Endo log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endo-server-log
+          path: endo-server.log
+          if-no-files-found: ignore
+
+  interop-ridley:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsodium-dev libwslay-dev
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null \
+                   | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+          # Resolve a concrete .so file the Dart probe can DynamicLibrary.open.
+          for f in "$LIBDIR/libsodium.so" "$LIBDIR/libsodium.so.23" \
+                   "$LIBDIR/libsodium.so.26"; do
+            if [ -e "$f" ]; then echo "LIBSODIUM_SO=$f" >> $GITHUB_ENV; break; fi
+          done
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean-toolchain', 'lakefile.lean', 'lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
+
+      - name: Build Lean client driver
+        run: lake build client-vs-external
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Install Ridley deps + drop in probe
+        working-directory: projects/ridley-dobjects
+        run: |
+          dart pub get
+          mkdir -p test/utils
+          echo "$LIBSODIUM_SO" > test/utils/libsodium_path.txt
+          cp ../../scripts/diagnostics/ridley-tcp-test-server.dart .
+
+      - name: Start Ridley probe (background)
+        working-directory: projects/ridley-dobjects
+        run: |
+          dart run ridley-tcp-test-server.dart --port 22047 \
+            > "$GITHUB_WORKSPACE/ridley-probe.log" 2>&1 &
+          echo $! > "$GITHUB_WORKSPACE/ridley.pid"
+          for i in $(seq 1 50); do
+            ss -tlnp 2>/dev/null | grep -q ':22047' && break
+            sleep 0.1
+          done
+
+      - name: Drive Ridley handshake from Lean client
+        run: |
+          ./.lake/build/bin/client-vs-external --port 22047 \
+            --frame netstring --captp-version 0.1 --hints false \
+            --handshake-only
+
+      - name: Wait for Ridley probe to exit
+        run: |
+          # Each `run:` step is a fresh shell, so `wait` against a PID
+          # written by a sibling step doesn't work. Poll instead.
+          if [ -f ridley.pid ]; then
+            pid="$(cat ridley.pid)"
+            for i in $(seq 1 100); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.1
+            done
+          fi
+
+      - name: Assert Ridley logged PASS
+        run: |
+          cat ridley-probe.log
+          grep -q "PASS: framing + handshake interop verified end-to-end" \
+            ridley-probe.log
+
+      - name: Stop Ridley probe (if still running)
+        if: always()
+        run: |
+          if [ -f ridley.pid ]; then
+            kill "$(cat ridley.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload Ridley probe log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ridley-probe-log
+          path: ridley-probe.log
+          if-no-files-found: ignore
+
+  interop-goblins-ws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsodium-dev libwslay-dev
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null \
+                   | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean-toolchain', 'lakefile.lean', 'lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
+
+      - name: Build Lean WS driver
+        run: lake build client-vs-guile-ws
+
+      - name: Install Nix (for guile-goblins from nixpkgs)
+        # guile-goblins isn't packaged for Ubuntu. nixpkgs ships
+        # guile-goblins-0.17.0, so we use nix-shell here the same way
+        # the local-dev recipe in docs/INTEROP.md does. Our submodule
+        # pin is v0.18.0; the CI exercises the legacy auth path that
+        # works against v0.17.
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Pre-fetch guile-goblins via nix
+        # Without this, the actual server-start step races a cold
+        # nix-store fetch (~100 MiB across 84 paths) against the
+        # 30-second wait loop below — observed to time out on cold
+        # GHA cache. Pre-fetching means the next step's nix-shell
+        # is a no-op so the loop only times the actual server start.
+        run: |
+          nix-shell -p guile guile-goblins guile-fibers \
+            --command 'guile --version >/dev/null'
+
+      - name: Start Goblins websocket peer (background)
+        run: |
+          nix-shell -p guile guile-goblins guile-fibers --command \
+            "GUILE_AUTO_COMPILE=0 guile \
+              scripts/diagnostics/goblins-ws-server.scm 22090" \
+            > "$GITHUB_WORKSPACE/goblins-ws.log" 2>&1 &
+          echo $! > "$GITHUB_WORKSPACE/goblins-ws.pid"
+          # 60s safety margin — Goblins itself typically reports
+          # ready in under 5s once the nix-shell is warm.
+          for i in $(seq 1 300); do
+            grep -q "goblins-ws-ready" "$GITHUB_WORKSPACE/goblins-ws.log" \
+              && break
+            sleep 0.2
+          done
+          echo "--- goblins-ws.log ---"
+          cat "$GITHUB_WORKSPACE/goblins-ws.log"
+
+      - name: Drive Goblins WS handshake from Lean
+        run: |
+          DESIG=$(grep -oP 'designator-hex=\K[0-9a-f]+' \
+                  "$GITHUB_WORKSPACE/goblins-ws.log")
+          if [ -z "$DESIG" ]; then
+            echo "Goblins did not print a designator-hex; aborting."
+            exit 1
+          fi
+          ./.lake/build/bin/client-vs-guile-ws \
+            --port 22090 --designator-hex "$DESIG" --auth legacy
+
+      - name: Stop Goblins peer
+        if: always()
+        run: |
+          if [ -f goblins-ws.pid ]; then
+            kill "$(cat goblins-ws.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload Goblins WS log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goblins-ws-log
+          path: goblins-ws.log
+          if-no-files-found: ignore
+
+  verify-veil-fresh:
+    # M10 hardening: re-run every `#check_invariants` from a clean
+    # project build, so the SMT solvers (Z3 / cvc5) are actually
+    # invoked end-to-end on every push. The other CI jobs cache
+    # `.lake/build` and rely on Lake's incremental re-elaboration,
+    # which is correct but trusts the cached `.olean` for unchanged
+    # files. This job caches only `.lake/packages` (the heavy
+    # toolchain deps) and forces project sources to recompile,
+    # which makes Veil re-invoke the SMT pipeline.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsodium-dev libwslay-dev
+
+      - name: Locate libsodium + libwslay
+        run: |
+          LIBDIR=$(dpkg -L libsodium23 libsodium-dev 2>/dev/null \
+                   | grep -oE '/usr/lib/[^/]+' | sort -u | head -n1)
+          [ -z "$LIBDIR" ] && LIBDIR=/usr/lib/x86_64-linux-gnu
+          echo "LIBSODIUM_LIB=$LIBDIR"     >> $GITHUB_ENV
+          echo "LIBSODIUM_INCLUDE=/usr/include" >> $GITHUB_ENV
+          echo "WSLAY_LIB=$LIBDIR"          >> $GITHUB_ENV
+          echo "WSLAY_INCLUDE=/usr/include" >> $GITHUB_ENV
+
+      - name: Install Lean (elan + toolchain from lean-toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake *packages* only (deps, not project build)
+        # Pin the cache to `.lake/packages` so dependency oleans
+        # survive but our project's `.lake/build` is empty on every
+        # run — guaranteeing Lean re-elaborates every Veil module
+        # and Z3/cvc5 actually re-discharge each `#check_invariants`.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages
+            ~/.elan/toolchains
+          key: ${{ runner.os }}-lake-pkgs-${{ hashFiles('lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-pkgs-
+
+      - name: Resolve packages (no project build)
+        run: lake update
+
+      - name: Re-run Veil #check_invariants from scratch
+        # `2>&1 | tee verify.log` so we can grep the output for the
+        # success markers afterwards (the SMT discharge prints
+        # `... ✅` for every theorem; if anything's `❌`, the build
+        # fails and the log shows which clause/action broke).
+        run: |
+          set -o pipefail
+          lake build \
+            OcapnLean.Captp.Spec \
+            OcapnLean.Captp.Channels \
+            OcapnLean.Captp.RefFifo \
+            OcapnLean.Captp.RefFifoForwarding \
+            OcapnLean.Captp.CrossedHellos \
+            OcapnLean.Captp.Gc \
+            OcapnLean.Captp.NoForgery \
+            OcapnLean.Captp.NoForgeryForwarded \
+            OcapnLean.Captp.Threeparty \
+            2>&1 | tee verify.log
+
+      - name: Summarise SMT discharge counts
+        # Defensive sanity check: every line of the form
+        # `… ... ✅` is a discharged SMT proof obligation. The
+        # `Trusting the SMT solver for N theorems` warnings sum to
+        # the actual axiom count Veil exports. If either drops to
+        # zero, something is suspiciously empty — fail loudly.
+        run: |
+          GREEN=$(grep -cE '✅' verify.log || true)
+          RED=$(grep -cE '❌' verify.log || true)
+          SUM=$(grep -oE 'Trusting the SMT solver for [0-9]+ theorems' verify.log \
+                | awk '{ s += $6 } END { print s }')
+          echo "::group::Veil discharge summary"
+          echo "  ✅ ticks         : $GREEN"
+          echo "  ❌ ticks         : $RED"
+          echo "  SMT theorems     : $SUM"
+          echo "::endgroup::"
+          if [ "$RED" -gt 0 ]; then
+            echo "FAIL: $RED Veil clauses did not discharge"
+            exit 1
+          fi
+          if [ "$GREEN" -lt 100 ]; then
+            echo "FAIL: only $GREEN ✅ ticks — Veil checks may not be running"
+            exit 1
+          fi
+          if [ -z "$SUM" ] || [ "$SUM" -lt 100 ]; then
+            echo "FAIL: SMT theorem count ($SUM) below the 100-theorem floor"
+            exit 1
+          fi
+
+      - name: Upload verify log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-verify-fresh-log
+          path: verify.log
+          if-no-files-found: ignore
