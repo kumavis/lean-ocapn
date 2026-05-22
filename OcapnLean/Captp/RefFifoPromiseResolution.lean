@@ -219,6 +219,8 @@ action learnResolution (v : vat) (p : ref) (oldT newT : vat) = {
   routesTo v p newT := True
 }
 
+#gen_spec
+
 ------------------------------------------------------------------------
 -- Bounded model trace: promise-resolves-to-Alice race
 ------------------------------------------------------------------------
