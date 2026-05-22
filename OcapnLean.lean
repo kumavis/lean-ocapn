@@ -11,6 +11,7 @@ import OcapnLean.Captp.RefFifo
 import OcapnLean.Captp.RefFifoForwarding
 import OcapnLean.Captp.RefFifoShortening
 import OcapnLean.Captp.RefFifoPromiseResolution
+import OcapnLean.Captp.RefFifoFlush
 import OcapnLean.Captp.Impl.MultiVat
 import OcapnLean.Captp.Impl.PromiseForwarding
 import OcapnLean.Captp.RefinementMultiVat
